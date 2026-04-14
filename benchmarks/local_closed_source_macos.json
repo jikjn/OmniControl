@@ -1,0 +1,34 @@
+{
+  "items": [
+    {
+      "name": "finder_accessibility_surface",
+      "category": "accessibility_desktop",
+      "target": "Finder",
+      "platform": "macos",
+      "kind": "desktop",
+      "needs": ["ui"],
+      "expected_primary": "accessibility",
+      "expected_language": "applescript"
+    },
+    {
+      "name": "notes_file_format_bypass",
+      "category": "file_format_bypass",
+      "target": "/Users/demo/report.md",
+      "platform": "macos",
+      "kind": "document",
+      "needs": ["document", "export"],
+      "expected_primary": "file_format",
+      "expected_language": "python"
+    },
+    {
+      "name": "chromium_web_surface",
+      "category": "browser_cdp",
+      "target": "https://example.com",
+      "platform": "macos",
+      "kind": "web",
+      "needs": ["browser", "dom"],
+      "expected_primary": "cdp",
+      "expected_language": "typescript"
+    }
+  ]
+}

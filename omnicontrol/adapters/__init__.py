@@ -1,0 +1,1 @@
+"""Adapter metadata for OmniControl."""
