@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import unittest
 from unittest.mock import patch
 
@@ -19,6 +20,7 @@ from omnicontrol.runtime.windows_ipc import (
 )
 
 
+@unittest.skipUnless(hasattr(ctypes, "WinDLL"), "requires Windows ctypes.WinDLL support")
 class WindowsIPCHelperTests(unittest.TestCase):
     def test_encode_utf16le_text_can_append_null(self) -> None:
         payload = encode_utf16le_text("abc")

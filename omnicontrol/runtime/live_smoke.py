@@ -8,6 +8,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import zipfile
 from typing import Any, Callable
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -19,6 +20,7 @@ from omnicontrol.runtime.adaptive_startup import (
     adaptive_launch_cli_window_app,
     cleanup_process_group,
 )
+from omnicontrol.runtime.evidence import write_result_bundle
 from omnicontrol.runtime.kb import PROFILE_METADATA, is_url_substitution_candidate, record_payload
 from omnicontrol.runtime.kb import recommended_launch_overrides
 from omnicontrol.runtime.kb import secondary_profile_specs
@@ -30,6 +32,8 @@ from omnicontrol.runtime.orchestrator import (
 from omnicontrol.runtime.staging import ensure_ascii_staging
 from omnicontrol.runtime.remediation import build_attempts_from_actions
 from omnicontrol.runtime.pivots import build_pivot_attempts_from_actions, run_with_strategy_pivots
+from omnicontrol.runtime.paths import resolve_run_output_dir, resolve_runtime_paths
+from omnicontrol.runtime.registry import list_profile_ids
 from omnicontrol.runtime.strategy import evaluate_contract
 from omnicontrol.runtime.invocation import prepare_script_payload
 from omnicontrol.runtime.transports import (
@@ -53,10 +57,20 @@ from omnicontrol.models import current_platform
 
 DEFAULT_CHROME_URL = "data:text/html,<title>OmniControl Smoke</title><h1>OmniControl Smoke</h1>"
 DEFAULT_WORD_PATH = Path(r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE")
+DEFAULT_WORD_MACOS_PATH = Path("/Applications/Microsoft Word.app")
 DEFAULT_CHROME_PATH = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
-DEFAULT_ILLUSTRATOR_OUTPUT = Path.cwd() / "smoke-output" / "illustrator-export" / "illustrator-smoke.svg"
 DEFAULT_MASTERPDF_PATH = Path(r"C:\Program Files (x86)\MasterPDF\MasterPDF.exe")
 DEFAULT_QQMUSIC_PATH = Path(r"C:\Program Files (x86)\Tencent\QQMusic\QQMusic.exe")
+
+
+def _default_output_dir(profile: str, override: Path | None = None) -> Path:
+    return resolve_run_output_dir(profile, output=override)
+
+
+def _default_output_file(profile: str, filename: str, override: Path | None = None) -> Path:
+    if override is not None:
+        return override
+    return _default_output_dir(profile) / filename
 
 
 def run_smoke(
@@ -70,6 +84,8 @@ def run_smoke(
     word_path: str | None = None,
     _profile_chain: tuple[str, ...] = (),
 ) -> dict:
+    if profile not in list_profile_ids():
+        raise ValueError(f"Unknown smoke profile: {profile}")
     if profile in _profile_chain:
         chain = " -> ".join([*_profile_chain, profile])
         raise RuntimeError(f"Detected recursive secondary profile cycle: {chain}")
@@ -333,6 +349,17 @@ def _record_payload(profile: str, payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _persist_payload(profile: str, payload: dict[str, Any], report_dir: Path) -> dict[str, Any]:
+    payload = _finalize_payload(profile, payload)
+    payload = write_result_bundle(
+        profile,
+        payload,
+        report_dir=report_dir,
+        runtime_paths=resolve_runtime_paths(),
+    )
+    return _record_payload(profile, payload)
+
+
 def run_finder_open_smoke(
     *,
     target_path: Path | None,
@@ -340,7 +367,7 @@ def run_finder_open_smoke(
 ) -> dict:
     _require_macos("finder-open")
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "finder-open"
+        output_dir = _default_output_dir("finder-open")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     payload = _run_osascript_profile(
@@ -348,11 +375,7 @@ def run_finder_open_smoke(
         args=[str(target_path)] if target_path is not None else [],
     )
     payload["profile"] = "finder-open"
-    payload = _finalize_payload("finder-open", payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("finder-open", payload)
+    payload = _persist_payload("finder-open", payload, output_dir)
     if payload.get("status") not in {"ok", "partial", "blocked"}:
         raise RuntimeError(payload.get("error", "finder-open smoke failed"))
     return payload
@@ -365,7 +388,7 @@ def run_safari_open_smoke(
 ) -> dict:
     _require_macos("safari-open")
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "safari-open"
+        output_dir = _default_output_dir("safari-open")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     payload = _run_osascript_profile(
@@ -373,11 +396,7 @@ def run_safari_open_smoke(
         args=[url] if url else [],
     )
     payload["profile"] = "safari-open"
-    payload = _finalize_payload("safari-open", payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("safari-open", payload)
+    payload = _persist_payload("safari-open", payload, output_dir)
     if payload.get("status") not in {"ok", "partial", "blocked"}:
         raise RuntimeError(payload.get("error", "safari-open smoke failed"))
     return payload
@@ -391,7 +410,7 @@ def run_safari_dom_write_smoke(
 ) -> dict:
     _require_macos("safari-dom-write")
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "safari-dom-write"
+        output_dir = _default_output_dir("safari-dom-write")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     def _attempt() -> dict[str, Any]:
@@ -423,11 +442,7 @@ def run_safari_dom_write_smoke(
         pivot_builder=_plan_safari_write_pivots,
     )
     payload["profile"] = "safari-dom-write"
-    payload = _finalize_payload("safari-dom-write", payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("safari-dom-write", payload)
+    payload = _persist_payload("safari-dom-write", payload, output_dir)
     if payload.get("status") not in {"ok", "partial", "blocked"}:
         raise RuntimeError(payload.get("error", "safari-dom-write smoke failed"))
     return payload
@@ -442,14 +457,16 @@ def run_word_export_smoke(
     if not source.exists():
         raise FileNotFoundError(f"Source document not found: {source}")
     if not word_path.exists():
-        raise FileNotFoundError(f"WINWORD.EXE not found: {word_path}")
+        raise FileNotFoundError(f"Word application not found: {word_path}")
+    if current_platform() == "macos":
+        return _run_word_export_smoke_macos(
+            source=source,
+            output_pdf=output_pdf,
+            word_path=word_path,
+        )
 
-    if output_pdf is None:
-        output_dir = Path.cwd() / "smoke-output" / "word-export"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_pdf = output_dir / f"{source.stem}-export.pdf"
-    else:
-        output_pdf.parent.mkdir(parents=True, exist_ok=True)
+    output_pdf = _default_output_file("word-export", f"{source.stem}-export.pdf", output_pdf)
+    output_pdf.parent.mkdir(parents=True, exist_ok=True)
 
     script_path = _resource_path("word_export_smoke.ps1")
     command = [
@@ -474,13 +491,9 @@ def run_word_export_smoke(
     )
     payload = _parse_json_output(result.stdout, result.stderr)
     payload["profile"] = "word-export"
-    payload = _finalize_payload("word-export", payload)
     payload["command"] = command
     payload["returncode"] = result.returncode
-    report_path = output_pdf.parent / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("word-export", payload)
+    payload = _persist_payload("word-export", payload, output_pdf.parent)
     if result.returncode != 0:
         raise RuntimeError(payload.get("error", "word-export smoke failed"))
     return payload
@@ -492,9 +505,14 @@ def run_word_write_smoke(
     word_path: Path,
 ) -> dict:
     if not word_path.exists():
-        raise FileNotFoundError(f"WINWORD.EXE not found: {word_path}")
+        raise FileNotFoundError(f"Word application not found: {word_path}")
+    if current_platform() == "macos":
+        return _run_word_write_smoke_macos(
+            output_docx=output_docx,
+            word_path=word_path,
+        )
     if output_docx is None:
-        output_docx = Path.cwd() / "smoke-output" / "word-write" / "word-write-smoke.docx"
+        output_docx = _default_output_file("word-write", "word-write-smoke.docx")
     output_docx.parent.mkdir(parents=True, exist_ok=True)
 
     script_path = _resource_path("word_write_smoke.ps1")
@@ -513,13 +531,9 @@ def run_word_write_smoke(
     result = subprocess.run(command, capture_output=True, text=False, check=False)
     payload = _parse_json_output(result.stdout, result.stderr)
     payload["profile"] = "word-write"
-    payload = _finalize_payload("word-write", payload)
     payload["command"] = command
     payload["returncode"] = result.returncode
-    report_path = output_docx.parent / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("word-write", payload)
+    payload = _persist_payload("word-write", payload, output_docx.parent)
     if result.returncode != 0:
         raise RuntimeError(payload.get("error", "word-write smoke failed"))
     return payload
@@ -532,9 +546,15 @@ def run_word_workflow_smoke(
     _profile_chain: tuple[str, ...] = (),
 ) -> dict:
     if not word_path.exists():
-        raise FileNotFoundError(f"WINWORD.EXE not found: {word_path}")
+        raise FileNotFoundError(f"Word application not found: {word_path}")
+    if current_platform() == "macos":
+        return _run_word_workflow_smoke_macos(
+            output_dir=output_dir,
+            word_path=word_path,
+            _profile_chain=_profile_chain,
+        )
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "word-workflow"
+        output_dir = _default_output_dir("word-workflow")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     def _attempt() -> dict[str, Any]:
@@ -584,11 +604,7 @@ def run_word_workflow_smoke(
         pivot_builder=_plan_word_workflow_pivots,
     )
     payload["profile"] = "word-workflow"
-    payload = _finalize_payload("word-workflow", payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("word-workflow", payload)
+    payload = _persist_payload("word-workflow", payload, output_dir)
     if payload.get("status") not in {"ok", "partial", "blocked"}:
         raise RuntimeError(payload.get("error", "word-workflow smoke failed"))
     return payload
@@ -601,7 +617,7 @@ def run_chrome_cdp_smoke(
     chrome_path: Path,
 ) -> dict:
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "chrome-cdp"
+        output_dir = _default_output_dir("chrome-cdp")
     output_dir.mkdir(parents=True, exist_ok=True)
     startup, chrome_proc = adaptive_launch_cdp_app(
         app_path=chrome_path,
@@ -641,10 +657,7 @@ def run_chrome_cdp_smoke(
         payload["port"] = startup.debug_port
         payload["returncode"] = result.returncode
         payload["chrome_pid"] = chrome_proc.pid if chrome_proc else None
-        report_path = output_dir / "result.json"
-        report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        payload["report_path"] = str(report_path)
-        payload = _record_payload("chrome-cdp", payload)
+        payload = _persist_payload("chrome-cdp", payload, output_dir)
         if result.returncode != 0:
             raise RuntimeError(payload.get("error", "chrome-cdp smoke failed"))
         return payload
@@ -665,7 +678,7 @@ def run_chrome_form_write_smoke(
     _profile_chain: tuple[str, ...] = (),
 ) -> dict:
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "chrome-form-write"
+        output_dir = _default_output_dir("chrome-form-write")
     output_dir.mkdir(parents=True, exist_ok=True)
     def _attempt() -> dict[str, Any]:
         startup, chrome_proc = adaptive_launch_cdp_app(
@@ -731,11 +744,7 @@ def run_chrome_form_write_smoke(
         pivot_builder=_plan_chrome_write_pivots,
     )
     payload["profile"] = "chrome-form-write"
-    payload = _finalize_payload("chrome-form-write", payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("chrome-form-write", payload)
+    payload = _persist_payload("chrome-form-write", payload, output_dir)
     if payload.get("status") not in {"ok", "partial", "blocked"}:
         raise RuntimeError(payload.get("error", "chrome-form-write smoke failed"))
     return payload
@@ -747,7 +756,7 @@ def run_everything_search_smoke(
     output_dir: Path | None,
 ) -> dict:
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "everything-search"
+        output_dir = _default_output_dir("everything-search")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     script_path = _resource_path("everything_search_smoke.ps1")
@@ -771,13 +780,9 @@ def run_everything_search_smoke(
     )
     payload = _parse_json_output(result.stdout, result.stderr)
     payload["profile"] = "everything-search"
-    payload = _finalize_payload("everything-search", payload)
     payload["command"] = command
     payload["returncode"] = result.returncode
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("everything-search", payload)
+    payload = _persist_payload("everything-search", payload, output_dir)
     if result.returncode != 0:
         raise RuntimeError(payload.get("error", "everything-search smoke failed"))
     return payload
@@ -788,7 +793,7 @@ def run_illustrator_export_smoke(
     output_path: Path | None,
 ) -> dict:
     if output_path is None:
-        output_path = DEFAULT_ILLUSTRATOR_OUTPUT
+        output_path = _default_output_file("illustrator-export", "illustrator-smoke.svg")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     script_path = _resource_path("illustrator_export_smoke.ps1")
@@ -810,13 +815,9 @@ def run_illustrator_export_smoke(
     )
     payload = _parse_json_output(result.stdout, result.stderr)
     payload["profile"] = "illustrator-export"
-    payload = _finalize_payload("illustrator-export", payload)
     payload["command"] = command
     payload["returncode"] = result.returncode
-    report_path = output_path.parent / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("illustrator-export", payload)
+    payload = _persist_payload("illustrator-export", payload, output_path.parent)
     if result.returncode != 0:
         raise RuntimeError(payload.get("error", "illustrator-export smoke failed"))
     return payload
@@ -833,7 +834,7 @@ def run_masterpdf_pagedown_smoke(
     if not masterpdf_path.exists():
         raise FileNotFoundError(f"MasterPDF.exe not found: {masterpdf_path}")
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "masterpdf-pagedown"
+        output_dir = _default_output_dir("masterpdf-pagedown")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     script_path = _resource_path("masterpdf_pagedown_smoke.ps1")
@@ -859,13 +860,9 @@ def run_masterpdf_pagedown_smoke(
     )
     payload = _parse_json_output(result.stdout, result.stderr)
     payload["profile"] = "masterpdf-pagedown"
-    payload = _finalize_payload("masterpdf-pagedown", payload)
     payload["command"] = command
     payload["returncode"] = result.returncode
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("masterpdf-pagedown", payload)
+    payload = _persist_payload("masterpdf-pagedown", payload, output_dir)
     if result.returncode != 0:
         raise RuntimeError(payload.get("error", "masterpdf-pagedown smoke failed"))
     return payload
@@ -881,7 +878,7 @@ def run_desktop_cdp_observe_smoke(
     if not app_path.exists():
         raise FileNotFoundError(f"App not found: {app_path}")
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / app_label
+        output_dir = _default_output_dir(app_label)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     port = _pick_free_port()
@@ -913,14 +910,11 @@ def run_desktop_cdp_observe_smoke(
         )
         payload = _parse_json_output(result.stdout, result.stderr)
         payload["profile"] = app_label
-        payload = _finalize_payload(app_label, payload)
         payload["command"] = node_command
         payload["launch_command"] = command
         payload["port"] = port
         payload["returncode"] = result.returncode
-        report_path = output_dir / "result.json"
-        report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        payload["report_path"] = str(report_path)
+        payload = _persist_payload(app_label, payload, output_dir)
         if result.returncode != 0:
             raise RuntimeError(payload.get("error", f"{app_label} smoke failed"))
         return payload
@@ -938,7 +932,7 @@ def run_quark_cdp_smoke(
     output_dir: Path | None,
 ) -> dict:
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "quark-cdp"
+        output_dir = _default_output_dir("quark-cdp")
     output_dir.mkdir(parents=True, exist_ok=True)
     learned = recommended_launch_overrides("quark-cdp")
     startup, proc = adaptive_launch_cdp_app(
@@ -970,13 +964,9 @@ def run_quark_cdp_smoke(
         payload["startup"] = startup.to_dict()
         payload["startup"]["learned_overrides"] = learned
         payload["profile"] = "quark-cdp"
-        payload = _finalize_payload("quark-cdp", payload)
         payload["command"] = command
         payload["returncode"] = result.returncode
-        report_path = output_dir / "result.json"
-        report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        payload["report_path"] = str(report_path)
-        payload = _record_payload("quark-cdp", payload)
+        payload = _persist_payload("quark-cdp", payload, output_dir)
         if result.returncode != 0:
             raise RuntimeError(payload.get("error", "quark-cdp smoke failed"))
         return payload
@@ -990,7 +980,7 @@ def run_quark_cdp_write_smoke(
     _profile_chain: tuple[str, ...] = (),
 ) -> dict:
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "quark-cdp-write"
+        output_dir = _default_output_dir("quark-cdp-write")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     app_path = Path(r"C:\Users\33032\AppData\Local\Programs\Quark\quark.exe")
@@ -1065,11 +1055,7 @@ def run_quark_cdp_write_smoke(
     )
 
     payload["profile"] = "quark-cdp-write"
-    payload = _finalize_payload("quark-cdp-write", payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("quark-cdp-write", payload)
+    payload = _persist_payload("quark-cdp-write", payload, output_dir)
     if payload.get("status") not in {"ok", "partial", "blocked"}:
         raise RuntimeError(payload.get("error", "quark-cdp-write smoke failed"))
     return payload
@@ -1081,7 +1067,7 @@ def run_trae_open_smoke(
     output_dir: Path | None,
 ) -> dict:
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "trae-open"
+        output_dir = _default_output_dir("trae-open")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     trae_cli = Path(r"C:\Users\33032\AppData\Local\Programs\Trae\bin\trae.cmd")
@@ -1114,13 +1100,9 @@ def run_trae_open_smoke(
         "duration_seconds": startup.diagnostics and 0 or 0,
     }
     payload["profile"] = "trae-open"
-    payload = _finalize_payload("trae-open", payload)
     payload["command"] = [str(trae_cli), "-n", "--user-data-dir", startup.user_data_dir or "", str(workspace)]
     payload["returncode"] = 0
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("trae-open", payload)
+    payload = _persist_payload("trae-open", payload, output_dir)
     cleanup_process_group("Trae")
     return payload
 
@@ -1132,7 +1114,7 @@ def run_trae_cdp_write_smoke(
     _profile_chain: tuple[str, ...] = (),
 ) -> dict:
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "trae-cdp-write"
+        output_dir = _default_output_dir("trae-cdp-write")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     trae_path = Path(r"C:\Users\33032\AppData\Local\Programs\Trae\Trae.exe")
@@ -1215,11 +1197,7 @@ def run_trae_cdp_write_smoke(
     )
 
     payload["profile"] = "trae-cdp-write"
-    payload = _finalize_payload("trae-cdp-write", payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("trae-cdp-write", payload)
+    payload = _persist_payload("trae-cdp-write", payload, output_dir)
     if payload.get("status") not in {"ok", "partial", "blocked"}:
         raise RuntimeError(payload.get("error", "trae-cdp-write smoke failed"))
     return payload
@@ -1230,7 +1208,7 @@ def run_nx_diagnose_smoke(
     output_dir: Path | None,
 ) -> dict:
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "nx-diagnose"
+        output_dir = _default_output_dir("nx-diagnose")
     output_dir.mkdir(parents=True, exist_ok=True)
     script_path = _resource_path("nx_diagnose_smoke.ps1")
     command = [
@@ -1393,11 +1371,7 @@ def run_nx_diagnose_smoke(
     )
 
     payload["profile"] = "nx-diagnose"
-    payload = _finalize_payload("nx-diagnose", payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("nx-diagnose", payload)
+    payload = _persist_payload("nx-diagnose", payload, output_dir)
     return payload
 
 
@@ -1406,7 +1380,7 @@ def run_isight_diagnose_smoke(
     output_dir: Path | None,
 ) -> dict:
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "isight-diagnose"
+        output_dir = _default_output_dir("isight-diagnose")
     output_dir.mkdir(parents=True, exist_ok=True)
     script_path = _resource_path("isight_diagnose_smoke.ps1")
 
@@ -1644,11 +1618,7 @@ def run_isight_diagnose_smoke(
     )
 
     payload["profile"] = "isight-diagnose"
-    payload = _finalize_payload("isight-diagnose", payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("isight-diagnose", payload)
+    payload = _persist_payload("isight-diagnose", payload, output_dir)
     return payload
 
 
@@ -1657,7 +1627,7 @@ def run_ue_diagnose_smoke(
     output_dir: Path | None,
 ) -> dict:
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "ue-diagnose"
+        output_dir = _default_output_dir("ue-diagnose")
     output_dir.mkdir(parents=True, exist_ok=True)
     script_path = _resource_path("ue_diagnose_smoke.ps1")
     command = [
@@ -1760,11 +1730,7 @@ def run_ue_diagnose_smoke(
     )
 
     payload["profile"] = "ue-diagnose"
-    payload = _finalize_payload("ue-diagnose", payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("ue-diagnose", payload)
+    payload = _persist_payload("ue-diagnose", payload, output_dir)
     return payload
 
 
@@ -1774,7 +1740,7 @@ def run_ue_python_write_smoke(
     _profile_chain: tuple[str, ...] = (),
 ) -> dict:
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "ue-python-write"
+        output_dir = _default_output_dir("ue-python-write")
     output_dir.mkdir(parents=True, exist_ok=True)
     script_path = _resource_path("ue_python_write_smoke.ps1")
     output_file = output_dir / "ue_python_write.txt"
@@ -1859,11 +1825,7 @@ def run_ue_python_write_smoke(
     )
 
     payload["profile"] = "ue-python-write"
-    payload = _finalize_payload("ue-python-write", payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("ue-python-write", payload)
+    payload = _persist_payload("ue-python-write", payload, output_dir)
     if payload.get("status") not in {"ok", "partial", "blocked"}:
         raise RuntimeError(payload.get("error", "ue-python-write smoke failed"))
     return payload
@@ -1880,7 +1842,7 @@ def run_cadviewer_view_smoke(
     if not app_path.exists():
         raise FileNotFoundError(f"CadViewer app not found: {app_path}")
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "cadv-view"
+        output_dir = _default_output_dir("cadv-view")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     script_path = _resource_path("cadv_view_smoke.ps1")
@@ -1906,13 +1868,9 @@ def run_cadviewer_view_smoke(
     )
     payload = _parse_json_output(result.stdout, result.stderr)
     payload["profile"] = "cadv-view"
-    payload = _finalize_payload("cadv-view", payload)
     payload["command"] = command
     payload["returncode"] = result.returncode
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("cadv-view", payload)
+    payload = _persist_payload("cadv-view", payload, output_dir)
     if result.returncode != 0:
         raise RuntimeError(payload.get("error", "cadv-view smoke failed"))
     return payload
@@ -1929,7 +1887,7 @@ def run_selfdraw_write_smoke(
     _profile_chain: tuple[str, ...] = (),
 ) -> dict:
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / profile
+        output_dir = _default_output_dir(profile)
     output_dir.mkdir(parents=True, exist_ok=True)
     def _attempt() -> dict[str, Any]:
         script_path = _resource_path("selfdraw_write_probe.ps1")
@@ -1990,11 +1948,7 @@ def run_selfdraw_write_smoke(
         pivot_builder=_plan_selfdraw_write_pivots,
     )
     payload["profile"] = profile
-    payload = _finalize_payload(profile, payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload(profile, payload)
+    payload = _persist_payload(profile, payload, output_dir)
     if payload.get("status") not in {"ok", "partial", "blocked"}:
         raise RuntimeError(payload.get("error", f"{profile} smoke failed"))
     return payload
@@ -2011,7 +1965,7 @@ def run_selfdraw_workflow_smoke(
     _profile_chain: tuple[str, ...] = (),
 ) -> dict:
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / profile
+        output_dir = _default_output_dir(profile)
     output_dir.mkdir(parents=True, exist_ok=True)
     workflow_path = output_dir / "workflow.json"
     workflow_path.write_text(json.dumps(workflow, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -2073,11 +2027,7 @@ def run_selfdraw_workflow_smoke(
         pivot_builder=_plan_selfdraw_workflow_pivots,
     )
     payload["profile"] = profile
-    payload = _finalize_payload(profile, payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload(profile, payload)
+    payload = _persist_payload(profile, payload, output_dir)
     if payload.get("status") not in {"ok", "partial", "blocked"}:
         raise RuntimeError(payload.get("error", f"{profile} smoke failed"))
     return payload
@@ -2099,7 +2049,7 @@ def run_cdp_workflow_smoke(
     _profile_chain: tuple[str, ...] = (),
 ) -> dict:
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / profile
+        output_dir = _default_output_dir(profile)
     output_dir.mkdir(parents=True, exist_ok=True)
     workflow_path = output_dir / "workflow.json"
     workflow_path.write_text(json.dumps(workflow, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -2174,11 +2124,7 @@ def run_cdp_workflow_smoke(
     )
 
     payload["profile"] = profile
-    payload = _finalize_payload(profile, payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload(profile, payload)
+    payload = _persist_payload(profile, payload, output_dir)
     if payload.get("status") not in {"ok", "partial", "blocked"}:
         raise RuntimeError(payload.get("error", f"{profile} smoke failed"))
     return payload
@@ -3510,7 +3456,7 @@ def run_qqmusic_play_smoke(
     if not qqmusic_path.exists():
         raise FileNotFoundError(f"QQMusic app not found: {qqmusic_path}")
     if output_dir is None:
-        output_dir = Path.cwd() / "smoke-output" / "qqmusic-play"
+        output_dir = _default_output_dir("qqmusic-play")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     launched = _qqmusic_ensure_running(qqmusic_path)
@@ -3643,11 +3589,7 @@ def run_qqmusic_play_smoke(
         "blockers": blockers,
         "selected_song": selected,
     }
-    payload = _finalize_payload("qqmusic-play", payload)
-    report_path = output_dir / "result.json"
-    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    payload["report_path"] = str(report_path)
-    payload = _record_payload("qqmusic-play", payload)
+    payload = _persist_payload("qqmusic-play", payload, output_dir)
     if payload.get("status") not in {"ok", "partial", "blocked"}:
         raise RuntimeError(payload.get("error", "qqmusic-play smoke failed"))
     return payload
@@ -3812,12 +3754,173 @@ def _extract_env_assignment(text: str, name: str) -> str | None:
 
 
 def _resolve_word_path() -> Path:
+    if current_platform() == "macos":
+        candidates = [
+            DEFAULT_WORD_MACOS_PATH,
+            Path.home() / "Applications" / "Microsoft Word.app",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return DEFAULT_WORD_MACOS_PATH
+
     candidates = [DEFAULT_WORD_PATH]
     candidates.extend(_app_paths_registry_values("WINWORD.EXE"))
     for candidate in candidates:
         if candidate.exists():
             return candidate
     return DEFAULT_WORD_PATH
+
+
+def _run_word_export_smoke_macos(
+    *,
+    source: Path,
+    output_pdf: Path | None,
+    word_path: Path,
+) -> dict:
+    output_pdf = _default_output_file("word-export", f"{source.stem}-export.pdf", output_pdf)
+    output_pdf.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = _run_osascript_profile(
+        "word_export_smoke_macos.applescript",
+        args=[str(source), str(output_pdf), str(word_path)],
+    )
+    payload["profile"] = "word-export"
+    payload["output"] = str(output_pdf)
+    payload["source"] = str(source)
+    payload["word_path"] = str(word_path)
+    payload.update(_pdf_output_details(output_pdf))
+    payload = _persist_payload("word-export", payload, output_pdf.parent)
+    if payload.get("returncode", 0) != 0 or payload.get("status") not in {"ok", "partial", "blocked"}:
+        raise RuntimeError(payload.get("error", "word-export smoke failed"))
+    return payload
+
+
+def _run_word_write_smoke_macos(
+    *,
+    output_docx: Path | None,
+    word_path: Path,
+) -> dict:
+    if output_docx is None:
+        output_docx = _default_output_file("word-write", "word-write-smoke.docx")
+    output_docx.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = _run_osascript_profile(
+        "word_write_smoke_macos.applescript",
+        args=[str(output_docx), str(word_path)],
+    )
+    payload["profile"] = "word-write"
+    payload["output"] = str(output_docx)
+    payload["word_path"] = str(word_path)
+    payload.update(_docx_output_details(output_docx))
+    payload = _persist_payload("word-write", payload, output_docx.parent)
+    if payload.get("returncode", 0) != 0 or payload.get("status") not in {"ok", "partial", "blocked"}:
+        raise RuntimeError(payload.get("error", "word-write smoke failed"))
+    return payload
+
+
+def _run_word_workflow_smoke_macos(
+    *,
+    output_dir: Path | None,
+    word_path: Path,
+    _profile_chain: tuple[str, ...] = (),
+) -> dict:
+    if output_dir is None:
+        output_dir = _default_output_dir("word-workflow")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_docx = output_dir / "word-workflow.docx"
+
+    def _attempt() -> dict[str, Any]:
+        payload = _run_osascript_profile(
+            "word_workflow_smoke_macos.applescript",
+            args=[str(output_dir), str(word_path)],
+        )
+        payload["output_docx"] = str(output_docx)
+        payload["word_path"] = str(word_path)
+        payload.update(_workflow_docx_details(output_docx))
+        return payload
+
+    def _plan_word_workflow_pivots(raw_payload: dict[str, Any]):
+        action_map = _metadata_secondary_profile_action_map(
+            "word-workflow",
+            raw_payload=raw_payload,
+            output_dir=output_dir,
+            profile_chain=_profile_chain,
+        )
+        return build_pivot_attempts_from_actions(
+            "word-workflow",
+            _finalize_payload("word-workflow", dict(raw_payload)),
+            action_map,
+        )
+
+    payload = run_with_strategy_pivots(
+        profile="word-workflow",
+        preflight=[
+            PreflightCheck(
+                name="word_exists",
+                run=lambda: path_exists_check("word_exists", str(word_path)),
+            )
+        ],
+        primary_attempts=[
+            AttemptSpec(name="word_workflow_macos", strategy="native_script", run=_attempt),
+        ],
+        pivot_builder=_plan_word_workflow_pivots,
+    )
+    payload["profile"] = "word-workflow"
+    payload["output_docx"] = str(output_docx)
+    payload["word_path"] = str(word_path)
+    payload.update(_workflow_docx_details(output_docx))
+    payload = _persist_payload("word-workflow", payload, output_dir)
+    if payload.get("status") not in {"ok", "partial", "blocked"}:
+        raise RuntimeError(payload.get("error", "word-workflow smoke failed"))
+    return payload
+
+
+def _docx_output_details(path: Path) -> dict[str, Any]:
+    payload: dict[str, Any] = {"exists": path.exists()}
+    if not path.exists():
+        return payload
+    data = path.read_bytes()
+    payload["size"] = len(data)
+    payload["magic"] = "-".join(f"{byte:02X}" for byte in data[:4])
+    payload["zip_ok"] = data[:4] == b"PK\x03\x04"
+    return payload
+
+
+def _pdf_output_details(path: Path) -> dict[str, Any]:
+    payload: dict[str, Any] = {"exists": path.exists()}
+    if not path.exists():
+        return payload
+    data = path.read_bytes()
+    payload["size"] = len(data)
+    payload["magic"] = data[:5].decode("ascii", errors="replace")
+    payload["magic_ok"] = data[:5] == b"%PDF-"
+    return payload
+
+
+def _workflow_docx_details(path: Path) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "docx_exists": path.exists(),
+        "output_docx": str(path),
+    }
+    if not path.exists():
+        return payload
+    data = path.read_bytes()
+    payload["docx_size"] = len(data)
+    payload["docx_magic"] = "-".join(f"{byte:02X}" for byte in data[:4])
+    payload["docx_zip_ok"] = data[:4] == b"PK\x03\x04"
+    try:
+        with zipfile.ZipFile(path) as archive:
+            document_xml = archive.read("word/document.xml").decode("utf-8", errors="replace")
+    except (KeyError, OSError, zipfile.BadZipFile):
+        payload["body_markers_ok"] = False
+        return payload
+    payload["body_markers_ok"] = (
+        "OmniControl Word Workflow" in document_xml
+        and "Step 1: body write" in document_xml
+        and "Step 2:" in document_xml
+    )
+    return payload
 
 
 def _resolve_chrome_path() -> Path:
