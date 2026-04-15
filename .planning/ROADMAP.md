@@ -12,7 +12,7 @@ This roadmap turns OmniControl's existing capability-first prototype into a prac
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Runtime Registry & Evidence Foundation** - Establish the shared registry, runtime roots, and evidence model every macOS run depends on.
+- [x] **Phase 1: Runtime Registry & Evidence Foundation** - Establish the shared registry, runtime roots, and evidence model every macOS run depends on.
 - [ ] **Phase 2: macOS Diagnostics & Outcome Taxonomy** - Make macOS failures diagnosable before expanding application claims.
 - [ ] **Phase 3: Finder & Safari Core Coverage** - Prove file-management and native browser workflows at core-app quality.
 - [ ] **Phase 4: Word & Terminal Core Coverage** - Prove office and developer-workflow core coverage with explicit support tiers.
@@ -28,7 +28,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   1. User can target supported macOS apps through one registry-backed source of truth instead of scattered app-specific configuration.
   2. User can run OmniControl from any working directory and still find runtime state and artifacts in stable framework-managed locations.
   3. User receives a structured `result.json` for each run with linked artifact paths instead of a status-only summary.
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [x] 01-01-PLAN.md — Lock the registry, runtime-root, and result-bundle migration contracts with unittest coverage and interface-first modules.
+- [x] 01-02-PLAN.md — Extract the typed smoke registry and stable runtime root policy while preserving profile IDs and KB behavior.
+- [x] 01-03-PLAN.md — Centralize canonical `result.json` writing with concrete artifact references and compatibility-preserving runtime integration.
 
 ### Phase 2: macOS Diagnostics & Outcome Taxonomy
 **Goal**: Users can distinguish macOS environment blockers from real adapter failures through consistent preflight and normalized outcomes.
@@ -78,7 +82,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Runtime Registry & Evidence Foundation | 0/TBD | Not started | - |
+| 1. Runtime Registry & Evidence Foundation | 3/3 | Complete | 2026-04-15 |
 | 2. macOS Diagnostics & Outcome Taxonomy | 0/TBD | Not started | - |
 | 3. Finder & Safari Core Coverage | 0/TBD | Not started | - |
 | 4. Word & Terminal Core Coverage | 0/TBD | Not started | - |

@@ -7,10 +7,10 @@
 
 ### Runtime Foundation
 
-- [ ] **RTF-01**: Framework uses a typed app/profile registry as the single source of truth for supported macOS applications, modes, and metadata
-- [ ] **RTF-02**: Runtime writes artifacts and state to stable runtime-managed locations instead of depending on the current working directory
+- [x] **RTF-01**: Framework uses a typed app/profile registry as the single source of truth for supported macOS applications, modes, and metadata
+- [x] **RTF-02**: Runtime writes artifacts and state to stable runtime-managed locations instead of depending on the current working directory
 - [ ] **RTF-03**: Runtime returns normalized `ok`, `partial`, `blocked`, and `error` outcomes with a shared blocker taxonomy across macOS adapters
-- [ ] **RTF-04**: Every macOS run produces a structured evidence bundle that records result metadata and associated artifacts
+- [x] **RTF-04**: Every macOS run produces a structured evidence bundle that records result metadata and associated artifacts
 
 ### macOS Environment & Diagnostics
 
@@ -34,8 +34,8 @@
 
 ### Verification & Evidence
 
-- [ ] **VER-01**: Each macOS run writes a structured `result.json` report
-- [ ] **VER-02**: Each report references concrete artifact paths for evidence instead of relying only on textual status summaries
+- [x] **VER-01**: Each macOS run writes a structured `result.json` report
+- [x] **VER-02**: Each report references concrete artifact paths for evidence instead of relying only on textual status summaries
 - [ ] **VER-03**: Workflow mode validates independent postconditions and does not treat command success alone as workflow success
 - [ ] **VER-04**: `partial` results explain concrete limitations or blockers instead of reporting an ambiguous failure state
 
@@ -65,10 +65,10 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| RTF-01 | Phase 1 | Pending |
-| RTF-02 | Phase 1 | Pending |
+| RTF-01 | Phase 1 | Complete |
+| RTF-02 | Phase 1 | Complete |
 | RTF-03 | Phase 2 | Pending |
-| RTF-04 | Phase 1 | Pending |
+| RTF-04 | Phase 1 | Complete |
 | DIAG-01 | Phase 2 | Pending |
 | DIAG-02 | Phase 2 | Pending |
 | DIAG-03 | Phase 2 | Pending |
@@ -80,8 +80,8 @@
 | EXT-01 | Phase 5 | Pending |
 | EXT-02 | Phase 5 | Pending |
 | EXT-03 | Phase 5 | Pending |
-| VER-01 | Phase 1 | Pending |
-| VER-02 | Phase 1 | Pending |
+| VER-01 | Phase 1 | Complete |
+| VER-02 | Phase 1 | Complete |
 | VER-03 | Phase 3 | Pending |
 | VER-04 | Phase 2 | Pending |
 

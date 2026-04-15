@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+from contextlib import redirect_stdout
+from io import StringIO
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from omnicontrol.cli import main
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -122,6 +127,34 @@ class CliE2ETests(unittest.TestCase):
             self.assertEqual(payload["summary"]["primary_matches"], 3)
             self.assertEqual(payload["summary"]["language_matches"], 3)
             self.assertTrue((output_dir / "benchmark-report.json").exists())
+
+    def test_smoke_json_uses_cli_entrypoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "result.json"
+            stdout = StringIO()
+            with patch(
+                "omnicontrol.cli.run_smoke",
+                return_value={
+                    "profile": "finder-open",
+                    "status": "ok",
+                    "window_name": "Documents",
+                    "report_path": str(report_path),
+                },
+            ) as run_smoke, redirect_stdout(stdout):
+                rc = main(["smoke", "finder-open", "--json"])
+        self.assertEqual(rc, 0)
+        run_smoke.assert_called_once_with(
+            "finder-open",
+            source=None,
+            output=None,
+            query=None,
+            url=None,
+            chrome_path=None,
+            word_path=None,
+        )
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["profile"], "finder-open")
+        self.assertEqual(payload["report_path"], str(report_path))
 
 
 if __name__ == "__main__":
