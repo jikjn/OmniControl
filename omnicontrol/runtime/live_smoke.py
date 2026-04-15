@@ -31,6 +31,7 @@ from omnicontrol.runtime.staging import ensure_ascii_staging
 from omnicontrol.runtime.remediation import build_attempts_from_actions
 from omnicontrol.runtime.pivots import build_pivot_attempts_from_actions, run_with_strategy_pivots
 from omnicontrol.runtime.strategy import evaluate_contract
+from omnicontrol.runtime.invocation import prepare_script_payload
 from omnicontrol.runtime.transports import (
     TransportAttemptSpec,
     TransportDescriptor,
@@ -1776,6 +1777,19 @@ def run_ue_python_write_smoke(
         output_dir = Path.cwd() / "smoke-output" / "ue-python-write"
     output_dir.mkdir(parents=True, exist_ok=True)
     script_path = _resource_path("ue_python_write_smoke.ps1")
+    output_file = output_dir / "ue_python_write.txt"
+    python_payload = (
+        "import pathlib; "
+        f"pathlib.Path(r'{str(output_file).replace(chr(92), '/')}').write_text("
+        "'ok from ue inline', encoding='utf-8')"
+    )
+    script_payload = prepare_script_payload(
+        python_payload,
+        output_dir,
+        stem="ue_write_payload",
+        suffix=".py",
+        prefer_file=True,
+    )
     project_info = ensure_ascii_staging(
         Path(r"C:\Users\33032\Documents\Unreal Projects\我的项目\我的项目.uproject"),
         output_dir / "staging",
@@ -1793,6 +1807,7 @@ def run_ue_python_write_smoke(
             "-OutputDir",
             str(output_dir),
         ]
+        command.extend(["-ScriptPath", script_payload.value])
         if project_path:
             command.extend(["-ProjectPath", project_path])
 
@@ -1801,6 +1816,7 @@ def run_ue_python_write_smoke(
             payload = _parse_json_output(result.stdout, result.stderr)
             if project_path:
                 payload["staging"] = project_info.to_dict()
+            payload["script_payload"] = script_payload.to_dict()
             payload["command"] = command
             payload["returncode"] = result.returncode
             return payload
