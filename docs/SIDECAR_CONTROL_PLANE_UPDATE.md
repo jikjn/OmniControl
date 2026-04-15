@@ -44,8 +44,6 @@ Secondary profile sidecars are now declared or inferred through shared helpers, 
   - If the zoom/write probe blocks, OmniControl can pivot to the simpler page-navigation sibling profile against the same PDF source.
 - `masterpdf-workflow -> masterpdf-pagedown`
   - Workflow-level failure can now degrade to a lighter sibling profile instead of stopping at a hard `blocked`.
-- `ue-python-write -> ue-diagnose`
-  - If the project write path blocks, OmniControl can pivot to the lighter UE diagnostic plane and keep the original write blockers attached.
 - `trae-cdp-write -> trae-open`
   - If the CDP write path blocks, OmniControl can still verify the vendor CLI/open plane in an isolated workspace.
 - `trae-workflow -> trae-open`
@@ -99,10 +97,6 @@ Latest real-smoke observations after the generalized rollout:
   - Primary workflow returns `ok` in the latest run.
 - `cadv-workflow`
   - Primary workflow returns `ok`.
-- `ue-python-write`
-  - The write profile now again finishes as `ok`.
-  - The generic pivot planner now prioritizes write-preserving entrypoint pivots such as `drop_project_context` before control-plane-only sidecars, so write profiles do not regress into diagnose-style `partial`.
-
 Windows write/workflow families currently verified to finish as `ok`:
 
 - `word-write`
@@ -117,7 +111,6 @@ Windows write/workflow families currently verified to finish as `ok`:
 - `masterpdf-workflow`
 - `cadv-zoom`
 - `cadv-workflow`
-- `ue-python-write`
 
 macOS integration status after this rollout:
 
