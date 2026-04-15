@@ -65,30 +65,30 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| RTF-01 | Phase TBD | Pending |
-| RTF-02 | Phase TBD | Pending |
-| RTF-03 | Phase TBD | Pending |
-| RTF-04 | Phase TBD | Pending |
-| DIAG-01 | Phase TBD | Pending |
-| DIAG-02 | Phase TBD | Pending |
-| DIAG-03 | Phase TBD | Pending |
-| CORE-01 | Phase TBD | Pending |
-| CORE-02 | Phase TBD | Pending |
-| CORE-03 | Phase TBD | Pending |
-| CORE-04 | Phase TBD | Pending |
-| CORE-05 | Phase TBD | Pending |
-| EXT-01 | Phase TBD | Pending |
-| EXT-02 | Phase TBD | Pending |
-| EXT-03 | Phase TBD | Pending |
-| VER-01 | Phase TBD | Pending |
-| VER-02 | Phase TBD | Pending |
-| VER-03 | Phase TBD | Pending |
-| VER-04 | Phase TBD | Pending |
+| RTF-01 | Phase 1 | Pending |
+| RTF-02 | Phase 1 | Pending |
+| RTF-03 | Phase 2 | Pending |
+| RTF-04 | Phase 1 | Pending |
+| DIAG-01 | Phase 2 | Pending |
+| DIAG-02 | Phase 2 | Pending |
+| DIAG-03 | Phase 2 | Pending |
+| CORE-01 | Phase 3 | Pending |
+| CORE-02 | Phase 3 | Pending |
+| CORE-03 | Phase 4 | Pending |
+| CORE-04 | Phase 4 | Pending |
+| CORE-05 | Phase 4 | Pending |
+| EXT-01 | Phase 5 | Pending |
+| EXT-02 | Phase 5 | Pending |
+| EXT-03 | Phase 5 | Pending |
+| VER-01 | Phase 1 | Pending |
+| VER-02 | Phase 1 | Pending |
+| VER-03 | Phase 3 | Pending |
+| VER-04 | Phase 2 | Pending |
 
 **Coverage:**
 - v1 requirements: 19 total
-- Mapped to phases: 0
-- Unmapped: 19 ⚠️
+- Mapped to phases: 19
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-04-15*
