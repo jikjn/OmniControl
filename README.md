@@ -11,7 +11,9 @@
   <strong>AUTOMATION BEYOND THE SDK.</strong>
 </p>
 
+<p align="center">
 English | [简体中文](./README.zh-CN.md)
+</p>
 
 <p align="center">
   <img src="./assets/hero-banner-base.jpg" alt="OmniControl hero banner" width="1200">
