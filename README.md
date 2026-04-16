@@ -4,7 +4,7 @@
 </h1>
 
 <p align="center">
-  <img src="./assets/title.jpg" alt="title" width="1200">
+  <img src="./assets/title.png" alt="title" width="1200">
 </p>
 
 <p align="center">
