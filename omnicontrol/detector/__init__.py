@@ -1,0 +1,1 @@
+"""Capability detector package."""
