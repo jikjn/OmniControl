@@ -1,6 +1,6 @@
-<h1>
-  <img src="./assets/icon.jpg" width="32" style="vertical-align: middle; margin-right: 8px;" />
-  OmniControl
+<h1 style="display: flex; align-items: center; gap: 12px;">
+  <img src="./assets/icon.jpg" width="48" />
+  <span>OmniControl</span>
 </h1>
 
 English | [简体中文](./README.zh-CN.md)
