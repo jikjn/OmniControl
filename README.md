@@ -1,9 +1,12 @@
-# OmniControl
+<h1>
+  <img src="icon.jpg" width="32" style="vertical-align: middle; margin-right: 8px;" />
+  OmniControl
+</h1>
 
 English | [简体中文](./README.zh-CN.md)
 
 <p align="center">
-  <img src="./assets/hero-banner.jpg" alt="OmniControl hero banner" width="1200">
+  <img src="./assets/hero-banner-base.jpg" alt="OmniControl hero banner" width="1200">
 </p>
 
 > **GUI is not long for this world. 💀🖥️ Automation should not stop where the SDK ends.**
