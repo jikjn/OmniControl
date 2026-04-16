@@ -2,7 +2,7 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-> **GUI is not long for this world. Automation should not stop where the SDK ends.**
+> **GUI is not long for this world. 💀🖥️ Automation should not stop where the SDK ends.**
 >
 > Most software was never designed for automation.  
 > It has no perfect API, no complete plugin surface, no unified scripting entrypoint.  
@@ -12,7 +12,7 @@ English | [简体中文](./README.zh-CN.md)
 
 ---
 
-## What OmniControl Is
+## What OmniControl Is 🚀
 
 OmniControl is a **control-surface-first** automation control layer and scaffolder.
 
@@ -32,7 +32,7 @@ Then OmniControl generates for that target:
 
 ---
 
-## Why OmniControl
+## Why OmniControl ⚠️
 
 Today many automation systems assume one thing:
 
@@ -57,7 +57,7 @@ OmniControl is built for that problem.
 
 ---
 
-## What You Can Use It For
+## What You Can Use It For 🔥
 
 OmniControl helps automation systems and agents:
 
@@ -78,7 +78,7 @@ Supported outcome states include:
 
 ---
 
-## The Core Idea
+## The Core Idea 🧠
 
 OmniControl does not treat automation as a single technical problem.  
 It acts more like a **control-surface router**:
@@ -98,7 +98,7 @@ Its default bias is:
 
 ---
 
-## CLI
+## CLI ⚙️
 
 OmniControl exposes five top-level commands:
 
