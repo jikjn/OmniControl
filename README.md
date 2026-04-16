@@ -1,5 +1,5 @@
 <h1>
-  <img src="icon.jpg" width="32" style="vertical-align: middle; margin-right: 8px;" />
+  <img src="./assets/icon.jpg" width="32" style="vertical-align: middle; margin-right: 8px;" />
   OmniControl
 </h1>
 
