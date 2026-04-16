@@ -65,6 +65,26 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(result.status, "partial")
         self.assertFalse(result.required_failed)
 
+    def test_ide_workflow_evaluates_ok(self) -> None:
+        payload = {
+            "status": "ok",
+            "all_required_steps_ok": True,
+            "required_steps_total": 13,
+            "required_steps_ok": 13,
+            "symbol_info_ok": True,
+            "rename_ok": True,
+            "reformat_ok": True,
+            "find_file_ok": True,
+            "directory_tree_ok": True,
+            "search_ok": True,
+            "problems_ok": True,
+            "terminal_ok": True,
+            "workflow_tools_used": ["create_new_file", "rename_refactoring", "execute_terminal_command"],
+        }
+        result = evaluate_contract(payload, SMOKE_CONTRACTS["ide-workflow"])
+        self.assertEqual(result.status, "ok")
+        self.assertFalse(result.required_failed)
+
     def test_write_profiles_allow_secondary_profile_partial(self) -> None:
         cases = [
             ("word-workflow", "word-write"),

@@ -58,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     smoke = subparsers.add_parser("smoke")
-    smoke.add_argument("profile", choices=["finder-open", "safari-open", "safari-dom-write", "word-export", "word-write", "word-workflow", "chrome-cdp", "chrome-form-write", "chrome-workflow", "everything-search", "qqmusic-play", "illustrator-export", "masterpdf-pagedown", "masterpdf-zoom", "masterpdf-workflow", "quark-cdp", "quark-cdp-write", "quark-workflow", "trae-open", "trae-cdp-write", "trae-workflow", "cadv-view", "cadv-zoom", "cadv-workflow", "nx-diagnose", "isight-diagnose", "ue-diagnose", "ue-python-write"])
+    smoke.add_argument("profile", choices=["finder-open", "safari-open", "safari-dom-write", "word-export", "word-write", "word-workflow", "chrome-cdp", "chrome-form-write", "chrome-workflow", "everything-search", "qqmusic-play", "illustrator-export", "masterpdf-pagedown", "masterpdf-zoom", "masterpdf-workflow", "quark-cdp", "quark-cdp-write", "quark-workflow", "trae-open", "trae-cdp-write", "trae-workflow", "ide-open", "ide-write", "ide-workflow", "cadv-view", "cadv-zoom", "cadv-workflow", "nx-diagnose", "isight-diagnose", "ue-diagnose", "ue-python-write"])
     smoke.add_argument("--source", help="Source file for profiles that require it.")
     smoke.add_argument(
         "--output",
@@ -69,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--url", default=None, help="Target URL for chrome-cdp.")
     smoke.add_argument("--chrome-path", default=None, help="Override chrome.exe path.")
     smoke.add_argument("--word-path", default=None, help="Override WINWORD.EXE path.")
+    smoke.add_argument("--app-path", default=None, help="Override app or launcher path for generic IDE profiles.")
     smoke.add_argument("--json", action="store_true", help="Print JSON output.")
 
     return parser
@@ -98,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
             url=args.url,
             chrome_path=args.chrome_path,
             word_path=args.word_path,
+            app_path=args.app_path,
         )
         return _print_result(payload, use_json=args.json)
 
@@ -148,6 +150,10 @@ def _print_result(payload: dict, *, use_json: bool) -> int:
             print(f"Matches: {', '.join(payload['matches'])}")
         if "title" in payload:
             print(f"Title: {payload['title']}")
+        if "family" in payload:
+            print(f"Family: {payload['family']}")
+        if "window_name" in payload:
+            print(f"Window: {payload['window_name']}")
         if "textarea_value" in payload:
             print(f"Textarea: {payload['textarea_value']}")
         if "marker" in payload:

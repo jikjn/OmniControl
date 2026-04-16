@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from importlib import resources
+import os
 from pathlib import Path
 import json
 import re
@@ -48,7 +50,7 @@ from omnicontrol.runtime.windows_ipc import (
     list_top_level_windows,
     send_wm_copydata,
 )
-from omnicontrol.models import current_platform
+from omnicontrol.models import current_platform, dedupe_keep_order, display_name_from_target
 
 
 DEFAULT_CHROME_URL = "data:text/html,<title>OmniControl Smoke</title><h1>OmniControl Smoke</h1>"
@@ -57,6 +59,78 @@ DEFAULT_CHROME_PATH = Path(r"C:\Program Files\Google\Chrome\Application\chrome.e
 DEFAULT_ILLUSTRATOR_OUTPUT = Path.cwd() / "smoke-output" / "illustrator-export" / "illustrator-smoke.svg"
 DEFAULT_MASTERPDF_PATH = Path(r"C:\Program Files (x86)\MasterPDF\MasterPDF.exe")
 DEFAULT_QQMUSIC_PATH = Path(r"C:\Program Files (x86)\Tencent\QQMusic\QQMusic.exe")
+
+JETBRAINS_IDE_STEMS = (
+    "pycharm",
+    "idea",
+    "intellij",
+    "webstorm",
+    "goland",
+    "rider",
+    "clion",
+    "rubymine",
+    "phpstorm",
+    "datagrip",
+    "dataspell",
+    "rustrover",
+)
+JETBRAINS_UTILITY_STEMS = {"format", "inspect", "ltedit"}
+CODE_IDE_STEMS = ("code", "code-insiders", "cursor", "windsurf", "trae", "codium", "vscodium")
+IDE_WRITE_MARKER = "OmniControlIDEWriteOK"
+IDE_BLOCKER_PATTERNS = {
+    "subscription expired": "ide license dialog blocked the editor",
+    "trial expired": "ide trial dialog blocked the editor",
+    "license activation": "ide license activation dialog blocked the editor",
+    "activation required": "ide license activation dialog blocked the editor",
+}
+IDE_LOG_BLOCKER_PATTERNS = {
+    "currently being updated": "ide update in progress blocked the editor",
+}
+IDE_HASH_COMMENT_SUFFIXES = {
+    ".py",
+    ".ps1",
+    ".psm1",
+    ".psd1",
+    ".rb",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".properties",
+}
+IDE_SLASH_COMMENT_SUFFIXES = {
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".java",
+    ".kt",
+    ".kts",
+    ".groovy",
+    ".scala",
+    ".swift",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hpp",
+    ".cs",
+    ".go",
+    ".rs",
+    ".dart",
+    ".php",
+}
+IDE_BLOCK_COMMENT_SUFFIXES = {".css", ".scss", ".less", ".jsonc"}
+IDE_XML_COMMENT_SUFFIXES = {".xml", ".html", ".htm", ".xhtml", ".svg"}
+JETBRAINS_MCP_COMPONENT_NAME = "McpServerSettings"
+JETBRAINS_MCP_DEFAULT_PORT = 64342
+JETBRAINS_MCP_PROTOCOL_VERSION = "2025-03-26"
 
 
 def run_smoke(
@@ -68,6 +142,7 @@ def run_smoke(
     url: str | None = None,
     chrome_path: str | None = None,
     word_path: str | None = None,
+    app_path: str | None = None,
     _profile_chain: tuple[str, ...] = (),
 ) -> dict:
     if profile in _profile_chain:
@@ -259,6 +334,34 @@ def run_smoke(
                 ]
             },
         )
+    if profile == "ide-open":
+        if not app_path:
+            raise ValueError("ide-open requires --app-path")
+        return run_ide_open_smoke(
+            target=Path(source) if source else Path.cwd(),
+            app_path=Path(app_path),
+            output_dir=Path(output) if output else None,
+        )
+    if profile == "ide-write":
+        if not source:
+            raise ValueError("ide-write requires --source")
+        if not app_path:
+            raise ValueError("ide-write requires --app-path")
+        return run_ide_write_smoke(
+            target=Path(source),
+            app_path=Path(app_path),
+            output_dir=Path(output) if output else None,
+            _profile_chain=next_chain,
+        )
+    if profile == "ide-workflow":
+        if not app_path:
+            raise ValueError("ide-workflow requires --app-path")
+        return run_ide_workflow_smoke(
+            target=Path(source) if source else Path.cwd(),
+            app_path=Path(app_path),
+            output_dir=Path(output) if output else None,
+            _profile_chain=next_chain,
+        )
     if profile == "cadv-view":
         if not source:
             raise ValueError("cadv-view requires --source")
@@ -315,6 +418,1771 @@ def run_smoke(
             _profile_chain=next_chain,
         )
     raise ValueError(f"Unknown smoke profile: {profile}")
+
+
+def run_ide_open_smoke(
+    *,
+    target: Path,
+    app_path: Path,
+    output_dir: Path | None,
+) -> dict[str, Any]:
+    if current_platform() != "windows":
+        raise RuntimeError("ide-open currently requires Windows.")
+
+    resolved_target = target.expanduser().resolve()
+    if not resolved_target.exists():
+        raise FileNotFoundError(f"IDE target not found: {resolved_target}")
+
+    if output_dir is None:
+        output_dir = Path.cwd() / "smoke-output" / "ide-open"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    launch = _launch_ide_target(
+        target=resolved_target,
+        app_path=app_path,
+        output_dir=output_dir,
+        timeout=25.0,
+    )
+    blockers: list[str] = []
+    if not launch["processes"]:
+        blockers.append("ide process was not observed under the install root")
+    if not launch["window_titles"]:
+        blockers.append("ide window was not observed")
+    if launch["matched_window"] is None:
+        blockers.append("ide window title did not expose the requested target")
+    blockers.extend(launch["detected_blockers"])
+    blockers = dedupe_keep_order(blockers)
+
+    payload = {
+        "profile": "ide-open",
+        "status": "ok" if launch["matched_window"] is not None else "blocked",
+        "target": str(resolved_target),
+        "target_kind": "directory" if resolved_target.is_dir() else "file",
+        "target_tokens": launch["target_tokens"],
+        "app_path": str(launch["spec"]["app_path"]),
+        "launcher_path": str(launch["spec"]["launcher_path"]),
+        "install_root": str(launch["spec"]["install_root"]),
+        "process_root": str(launch["spec"]["process_root"]),
+        "family": launch["spec"]["family"],
+        "command": launch["command"],
+        "launch_pid": launch["launch_pid"],
+        "returncode": launch["returncode"],
+        "process_count_before": launch["process_count_before"],
+        "process_count": len(launch["processes"]),
+        "new_process_count": launch["new_process_count"],
+        "processes": launch["processes"],
+        "windows": launch["window_titles"],
+        "window_name": launch["matched_window"].title if launch["matched_window"] is not None else (launch["window_titles"][0] if launch["window_titles"] else ""),
+        "window_handle": launch["matched_window"].hwnd if launch["matched_window"] is not None else 0,
+        "opened_target": launch["matched_window"] is not None,
+        "duration_seconds": launch["duration_seconds"],
+        "detected_blockers": launch["detected_blockers"],
+        "blockers": blockers,
+    }
+    payload = _finalize_payload("ide-open", payload)
+    report_path = output_dir / "result.json"
+    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    payload["report_path"] = str(report_path)
+    payload = _record_payload("ide-open", payload)
+    if payload.get("status") not in {"ok", "partial", "blocked"}:
+        raise RuntimeError(payload.get("error", "ide-open smoke failed"))
+    return payload
+
+
+def run_ide_write_smoke(
+    *,
+    target: Path,
+    app_path: Path,
+    output_dir: Path | None,
+    _profile_chain: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    if current_platform() != "windows":
+        raise RuntimeError("ide-write currently requires Windows.")
+
+    resolved_target = target.expanduser().resolve()
+    if not resolved_target.exists():
+        raise FileNotFoundError(f"IDE target not found: {resolved_target}")
+    if resolved_target.is_dir():
+        raise ValueError("ide-write requires a file target.")
+
+    if output_dir is None:
+        output_dir = Path.cwd() / "smoke-output" / "ide-write"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _attempt() -> dict[str, Any]:
+        launch = _launch_ide_target(
+            target=resolved_target,
+            app_path=app_path,
+            output_dir=output_dir,
+            timeout=35.0,
+        )
+        blockers = list(launch["detected_blockers"])
+        if not launch["processes"]:
+            blockers.append("ide process was not observed under the install root")
+        if not launch["window_titles"]:
+            blockers.append("ide window did not expose any visible title")
+        matched_window = launch["matched_window"]
+        probe_payload: dict[str, Any] = {}
+        mcp_payload: dict[str, Any] = {}
+        mcp_error_note: str | None = None
+        marker_written = False
+        write_transport = "file_format"
+        if matched_window is None:
+            blockers.append("ide window title did not expose the requested target")
+        else:
+            if str(launch["spec"]["family"]) == "jetbrains":
+                mcp_payload = _apply_jetbrains_mcp_file_write(
+                    target=resolved_target,
+                    app_path=app_path,
+                    marker=IDE_WRITE_MARKER,
+                )
+                if mcp_payload.get("status") == "ok":
+                    marker_written = True
+                    write_transport = "jetbrains_mcp"
+                elif mcp_payload.get("error"):
+                    mcp_error_note = str(mcp_payload["error"])
+            if not marker_written:
+                probe_payload = _apply_safe_ide_file_write(
+                    target=resolved_target,
+                    marker=IDE_WRITE_MARKER,
+                )
+                if probe_payload.get("status") == "error":
+                    blockers.append(str(probe_payload.get("error") or "safe IDE write failed"))
+                marker_written = _wait_for_file_marker(
+                    resolved_target,
+                    IDE_WRITE_MARKER,
+                    timeout=2.0,
+                )
+                if not marker_written:
+                    if mcp_error_note:
+                        blockers.append(mcp_error_note)
+                    blockers.append("target file did not reflect the write marker")
+                if str(launch["spec"]["family"]) == "jetbrains":
+                    marker_line = int(probe_payload.get("marker_line") or 1)
+                    navigation = _launch_ide_target(
+                        target=resolved_target,
+                        app_path=app_path,
+                        output_dir=output_dir,
+                        timeout=20.0,
+                        line=marker_line,
+                        column=1,
+                    )
+                    if navigation["matched_window"] is None:
+                        blockers.append("ide did not navigate back to the written target")
+                    else:
+                        matched_window = navigation["matched_window"]
+                        launch = navigation
+        blockers = dedupe_keep_order(blockers)
+        payload = {
+            "profile": "ide-write",
+            "status": "ok" if marker_written else "blocked",
+            "target": str(resolved_target),
+            "target_kind": "file",
+            "target_tokens": launch["target_tokens"],
+            "app_path": str(launch["spec"]["app_path"]),
+            "launcher_path": str(launch["spec"]["launcher_path"]),
+            "install_root": str(launch["spec"]["install_root"]),
+            "process_root": str(launch["spec"]["process_root"]),
+            "family": launch["spec"]["family"],
+            "command": launch["command"],
+            "launch_pid": launch["launch_pid"],
+            "returncode": launch["returncode"],
+            "process_count_before": launch["process_count_before"],
+            "process_count": len(launch["processes"]),
+            "new_process_count": launch["new_process_count"],
+            "processes": launch["processes"],
+            "windows": launch["window_titles"],
+            "window_name": matched_window.title if matched_window is not None else (launch["window_titles"][0] if launch["window_titles"] else ""),
+            "window_handle": matched_window.hwnd if matched_window is not None else 0,
+            "opened_target": matched_window is not None,
+            "marker": IDE_WRITE_MARKER,
+            "write_ok": marker_written,
+            "write_transport": write_transport,
+            "file_value": _read_text_lossy(resolved_target),
+            "duration_seconds": launch["duration_seconds"],
+            "detected_blockers": launch["detected_blockers"],
+            "blockers": blockers,
+        }
+        if mcp_payload:
+            payload["mcp_status"] = mcp_payload.get("status")
+            payload["mcp_error"] = mcp_payload.get("error")
+            for key in (
+                "mcp_base_url",
+                "mcp_project_path",
+                "mcp_path_in_project",
+                "mcp_open_files",
+                "mcp_active_file_path",
+                "mcp_used_tools",
+                "mcp_tool_count",
+                "marker_line",
+                "marker_line_text",
+                "line_ending",
+                "changed",
+            ):
+                if key in mcp_payload:
+                    payload[key] = mcp_payload[key]
+        if probe_payload:
+            payload["probe_status"] = probe_payload.get("status")
+            payload["probe_transport"] = probe_payload.get("transport")
+            payload["probe_error"] = probe_payload.get("error")
+            for key in ("marker_line", "marker_line_text", "line_ending", "changed"):
+                if key in probe_payload:
+                    payload[key] = probe_payload[key]
+        return payload
+
+    def _plan_ide_write_pivots(raw_payload: dict[str, Any]):
+        action_map = _metadata_secondary_profile_action_map(
+            "ide-write",
+            raw_payload=raw_payload,
+            output_dir=output_dir,
+            source=resolved_target,
+            app_path=app_path,
+            profile_chain=_profile_chain,
+        )
+        return build_pivot_attempts_from_actions(
+            "ide-write",
+            _finalize_payload("ide-write", dict(raw_payload)),
+            action_map,
+        )
+
+    payload = run_with_strategy_pivots(
+        profile="ide-write",
+        preflight=[
+            PreflightCheck(
+                name="ide_write_source_exists",
+                run=lambda: path_exists_check("ide_write_source_exists", str(resolved_target)),
+            ),
+            PreflightCheck(
+                name="ide_write_app_exists",
+                run=lambda: path_exists_check("ide_write_app_exists", str(app_path)),
+            ),
+        ],
+        primary_attempts=[
+            AttemptSpec(name="ide_write", strategy="direct_script", run=_attempt),
+        ],
+        pivot_builder=_plan_ide_write_pivots,
+    )
+    payload["profile"] = "ide-write"
+    payload = _finalize_payload("ide-write", payload)
+    report_path = output_dir / "result.json"
+    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    payload["report_path"] = str(report_path)
+    payload = _record_payload("ide-write", payload)
+    if payload.get("status") not in {"ok", "partial", "blocked"}:
+        raise RuntimeError(payload.get("error", "ide-write smoke failed"))
+    return payload
+
+
+def run_ide_workflow_smoke(
+    *,
+    target: Path,
+    app_path: Path,
+    output_dir: Path | None,
+    _profile_chain: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    if current_platform() != "windows":
+        raise RuntimeError("ide-workflow currently requires Windows.")
+
+    resolved_target = target.expanduser().resolve()
+    if not resolved_target.exists():
+        raise FileNotFoundError(f"IDE target not found: {resolved_target}")
+
+    if output_dir is None:
+        output_dir = Path.cwd() / "smoke-output" / "ide-workflow"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _attempt() -> dict[str, Any]:
+        spec = _resolve_ide_spec(app_path)
+        blockers: list[str] = []
+        workflow_steps: list[dict[str, Any]] = []
+        required_steps_total = 0
+        required_steps_ok = 0
+        workflow_tools_used: list[str] = []
+
+        def _record_step(
+            name: str,
+            ok: bool,
+            *,
+            detail: str,
+            required: bool = True,
+            evidence: dict[str, Any] | None = None,
+        ) -> None:
+            nonlocal required_steps_total
+            nonlocal required_steps_ok
+            if required:
+                required_steps_total += 1
+                if ok:
+                    required_steps_ok += 1
+            workflow_steps.append(
+                {
+                    "name": name,
+                    "ok": ok,
+                    "required": required,
+                    "detail": detail,
+                    "evidence": evidence or {},
+                }
+            )
+            if required and not ok:
+                blockers.append(detail)
+
+        if str(spec["family"]) != "jetbrains":
+            payload = {
+                "profile": "ide-workflow",
+                "status": "blocked",
+                "requested_target": str(resolved_target),
+                "target": str(resolved_target),
+                "family": spec["family"],
+                "launcher_path": str(spec["launcher_path"]),
+                "workflow_steps": workflow_steps,
+                "required_steps_total": 0,
+                "required_steps_ok": 0,
+                "all_required_steps_ok": False,
+                "blockers": ["deep IDE workflow currently requires a JetBrains MCP-capable IDE family"],
+            }
+            return payload
+
+        project_root = _guess_jetbrains_project_root(resolved_target)
+        workflow_probe_dir = project_root / "smoke-output" / "ide-workflow-probe"
+        workflow_probe_dir.mkdir(parents=True, exist_ok=True)
+        workflow_run_id = int(time.time() * 1000)
+        probe_target = workflow_probe_dir / f"deep_probe_{workflow_run_id}.py"
+        path_in_project = str(probe_target.relative_to(project_root))
+        workflow_probe_dir_in_project = str(workflow_probe_dir.relative_to(project_root))
+        symbol_name = "new_name"
+        renamed_symbol_name = "new_name"
+        initial_text = (
+            f"def {symbol_name}(x:int)->int:\n"
+            "    return x+1\n\n"
+            f"value = {symbol_name}(2)\n"
+        )
+        workflow_marker = f"OmniControlIdeWorkflow{workflow_run_id}"
+        marker_line_text = _render_ide_marker_line(probe_target, workflow_marker)
+
+        def _wait_for_local_text(snippet: str, *, timeout: float) -> str:
+            deadline = time.time() + timeout
+            last_text = ""
+            while time.time() < deadline:
+                last_text = _read_text_lossy(probe_target)
+                if snippet in last_text:
+                    return last_text
+                time.sleep(0.5)
+            return _read_text_lossy(probe_target)
+
+        def _wait_for_local_file(timeout: float) -> bool:
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                if probe_target.exists():
+                    return True
+                time.sleep(0.25)
+            return probe_target.exists()
+
+        launch = _launch_ide_target(
+            target=project_root,
+            app_path=app_path,
+            output_dir=output_dir,
+            timeout=35.0,
+        )
+        blockers.extend(launch["detected_blockers"])
+        if not launch["processes"]:
+            blockers.append("ide process was not observed under the install root")
+        if not launch["window_titles"]:
+            blockers.append("ide window did not expose any visible title")
+
+        matched_window = launch["matched_window"]
+        if matched_window is None:
+            blockers.append("ide window title did not expose the requested workspace")
+
+        active_file_path: str | None = None
+        open_files: list[str] = []
+        read_text = ""
+        renamed_text = ""
+        final_text = ""
+        symbol_info_documentation = ""
+        symbol_info_declaration = ""
+        rename_response_text = ""
+        search_entries: list[dict[str, Any]] = []
+        matching_files: list[str] = []
+        directory_tree = ""
+        directory_tree_errors: list[str] = []
+        problems_count: int | None = None
+        problems: list[dict[str, Any]] = []
+        terminal_output = ""
+        terminal_exit_code: int | None = None
+        mcp_base_url = ""
+        mcp_tool_count = 0
+        read_ok = False
+        symbol_info_ok = False
+        rename_ok = False
+        write_ok = False
+        reformat_ok = False
+        find_file_ok = False
+        directory_tree_ok = False
+        search_ok = False
+        problems_ok = False
+        terminal_ok = False
+        terminal_marker = f"OMNI_JB_TERMINAL_{int(time.time() * 1000)}"
+        workflow_exception: str | None = None
+
+        try:
+            with _open_jetbrains_mcp_session(app_path, timeout=15.0) as session:
+                mcp_base_url = session.base_url
+                tools = session.list_tools()
+                available_tool_names = {str(tool.get("name") or "") for tool in tools if tool.get("name")}
+                mcp_tool_count = len(tools)
+                required_tools = {
+                    "create_new_file",
+                    "open_file_in_editor",
+                    "get_file_text_by_path",
+                    "get_symbol_info",
+                    "rename_refactoring",
+                    "replace_text_in_file",
+                    "reformat_file",
+                    "find_files_by_name_keyword",
+                    "list_directory_tree",
+                    "search_in_files_by_text",
+                    "get_all_open_file_paths",
+                    "get_file_problems",
+                    "execute_terminal_command",
+                }
+                missing_tools = sorted(tool for tool in required_tools if tool not in available_tool_names)
+                _record_step(
+                    "tool_inventory",
+                    not missing_tools,
+                    detail="required JetBrains MCP tools are available" if not missing_tools else f"missing JetBrains MCP tools: {', '.join(missing_tools)}",
+                    evidence={"available_tools": sorted(available_tool_names)},
+                )
+                if missing_tools:
+                    raise RuntimeError(f"missing JetBrains MCP tools: {', '.join(missing_tools)}")
+
+                create_payload = session.call_tool(
+                    "create_new_file",
+                    {
+                        "pathInProject": path_in_project,
+                        "text": initial_text,
+                        "overwrite": True,
+                        "projectPath": str(project_root),
+                    },
+                )
+                _raise_for_mcp_tool_error(create_payload, "create_new_file")
+                workflow_tools_used.append("create_new_file")
+                create_ok = _wait_for_local_file(3.0)
+                _record_step(
+                    "create_probe_file",
+                    create_ok,
+                    detail="created workflow probe file inside the project" if create_ok else "JetBrains MCP did not materialize the probe file on disk",
+                    evidence={"path_in_project": path_in_project, "exists_on_disk": create_ok},
+                )
+                if not create_ok:
+                    raise RuntimeError("JetBrains MCP create_new_file did not materialize the probe file on disk")
+                time.sleep(0.5)
+
+                open_payload = session.call_tool(
+                    "open_file_in_editor",
+                    {
+                        "filePath": path_in_project,
+                        "projectPath": str(project_root),
+                    },
+                )
+                _raise_for_mcp_tool_error(open_payload, "open_file_in_editor")
+                workflow_tools_used.append("open_file_in_editor")
+                open_files_payload = _wait_for_jetbrains_open_file(
+                    session,
+                    project_path=project_root,
+                    path_in_project=path_in_project,
+                    timeout=8.0,
+                )
+                open_files_result = _decode_mcp_tool_result(open_files_payload)
+                if isinstance(open_files_result, dict):
+                    active_file_path = open_files_result.get("activeFilePath")
+                    listed_files = open_files_result.get("openFiles")
+                    if isinstance(listed_files, list):
+                        open_files = [str(item) for item in listed_files]
+                open_ok = active_file_path == path_in_project or path_in_project in open_files
+                _record_step(
+                    "open_probe_file",
+                    open_ok,
+                    detail="opened probe file in the IDE editor" if open_ok else "IDE did not report the probe file as active or open",
+                    evidence={"active_file_path": active_file_path, "open_files": open_files},
+                )
+                workflow_tools_used.append("get_all_open_file_paths")
+
+                read_payload = session.call_tool(
+                    "get_file_text_by_path",
+                    {
+                        "pathInProject": path_in_project,
+                        "truncateMode": "NONE",
+                        "projectPath": str(project_root),
+                    },
+                )
+                _raise_for_mcp_tool_error(read_payload, "get_file_text_by_path")
+                workflow_tools_used.append("get_file_text_by_path")
+                read_text = _mcp_response_text(read_payload)
+                read_ok = initial_text.replace("\r\n", "\n").strip() in read_text.replace("\r\n", "\n")
+                _record_step(
+                    "read_probe_file",
+                    read_ok,
+                    detail="read probe file text through JetBrains MCP" if read_ok else "JetBrains MCP did not return the expected probe content",
+                    evidence={"text_preview": read_text[:200]},
+                )
+
+                symbol_payload = session.call_tool(
+                    "get_symbol_info",
+                    {
+                        "filePath": path_in_project,
+                        "line": 1,
+                        "column": 5,
+                        "projectPath": str(project_root),
+                    },
+                )
+                _raise_for_mcp_tool_error(symbol_payload, "get_symbol_info")
+                workflow_tools_used.append("get_symbol_info")
+                symbol_result = _decode_mcp_tool_result(symbol_payload)
+                if isinstance(symbol_result, dict):
+                    symbol_info_documentation = str(symbol_result.get("documentation") or "")
+                    symbol_info = symbol_result.get("symbolInfo")
+                    if isinstance(symbol_info, dict):
+                        symbol_info_declaration = str(symbol_info.get("declarationText") or "")
+                symbol_info_ok = symbol_name in symbol_info_documentation or symbol_name in symbol_info_declaration
+                _record_step(
+                    "inspect_symbol_info",
+                    symbol_info_ok,
+                    detail="retrieved symbol information through JetBrains MCP" if symbol_info_ok else "JetBrains MCP did not return the expected symbol documentation",
+                    evidence={
+                        "declaration_text": symbol_info_declaration[:200],
+                        "documentation": symbol_info_documentation[:200],
+                    },
+                )
+
+                rename_payload = session.call_tool(
+                    "rename_refactoring",
+                    {
+                        "pathInProject": path_in_project,
+                        "symbolName": symbol_name,
+                        "newName": renamed_symbol_name,
+                        "projectPath": str(project_root),
+                    },
+                )
+                _raise_for_mcp_tool_error(rename_payload, "rename_refactoring")
+                workflow_tools_used.append("rename_refactoring")
+                rename_response_text = _mcp_response_text(rename_payload)
+                rename_deadline = time.time() + 5.0
+                while time.time() < rename_deadline:
+                    rename_read_payload = session.call_tool(
+                        "get_file_text_by_path",
+                        {
+                            "pathInProject": path_in_project,
+                            "truncateMode": "NONE",
+                            "projectPath": str(project_root),
+                        },
+                    )
+                    _raise_for_mcp_tool_error(rename_read_payload, "get_file_text_by_path")
+                    workflow_tools_used.append("get_file_text_by_path")
+                    renamed_text = _mcp_response_text(rename_read_payload)
+                    rename_ok = renamed_symbol_name in renamed_text and symbol_name not in renamed_text
+                    if rename_ok:
+                        break
+                    time.sleep(0.5)
+                if not rename_ok:
+                    renamed_text = _wait_for_local_text(renamed_symbol_name, timeout=3.0)
+                    rename_ok = renamed_symbol_name in renamed_text and symbol_name not in renamed_text
+                _record_step(
+                    "rename_symbol",
+                    rename_ok,
+                    detail="renamed the probe symbol through JetBrains MCP" if rename_ok else "JetBrains MCP rename_refactoring did not update the probe symbol",
+                    evidence={
+                        "rename_response": rename_response_text[:200],
+                        "text_preview": renamed_text[:200],
+                    },
+                )
+
+                base_text_for_marker = (renamed_text or _read_text_lossy(probe_target)).replace("\r\n", "\n")
+                updated_text = f"{base_text_for_marker.rstrip(chr(10))}\n{marker_line_text}\n"
+                replace_payload = session.call_tool(
+                    "replace_text_in_file",
+                    {
+                        "pathInProject": path_in_project,
+                        "oldText": base_text_for_marker,
+                        "newText": updated_text,
+                        "replaceAll": False,
+                        "caseSensitive": True,
+                        "projectPath": str(project_root),
+                    },
+                )
+                _raise_for_mcp_tool_error(replace_payload, "replace_text_in_file")
+                workflow_tools_used.append("replace_text_in_file")
+                final_text = _wait_for_local_text(workflow_marker, timeout=3.0)
+                write_ok = workflow_marker in final_text and renamed_symbol_name in final_text
+                _record_step(
+                    "append_workflow_marker",
+                    write_ok,
+                    detail="appended a workflow marker through JetBrains MCP" if write_ok else "JetBrains MCP replace_text_in_file did not persist the workflow marker",
+                    evidence={"marker": workflow_marker, "text_preview": final_text[:200]},
+                )
+
+                reformat_payload = session.call_tool(
+                    "reformat_file",
+                    {
+                        "path": path_in_project,
+                        "projectPath": str(project_root),
+                    },
+                )
+                _raise_for_mcp_tool_error(reformat_payload, "reformat_file")
+                workflow_tools_used.append("reformat_file")
+                reformat_response_text = _mcp_response_text(reformat_payload)
+                time.sleep(0.5)
+                final_text = _read_text_lossy(probe_target)
+                reformat_ok = workflow_marker in final_text and renamed_symbol_name in final_text
+                _record_step(
+                    "reformat_probe_file",
+                    reformat_ok,
+                    detail="reformatted the probe file through JetBrains MCP" if reformat_ok else "JetBrains MCP reformat_file did not preserve the renamed probe content",
+                    evidence={
+                        "reformat_response": reformat_response_text[:200],
+                        "text_preview": final_text[:200],
+                    },
+                )
+
+                find_payload = session.call_tool(
+                    "find_files_by_name_keyword",
+                    {
+                        "nameKeyword": probe_target.stem,
+                        "fileCountLimit": 20,
+                        "timeout": 15000,
+                        "projectPath": str(project_root),
+                    },
+                )
+                _raise_for_mcp_tool_error(find_payload, "find_files_by_name_keyword")
+                workflow_tools_used.append("find_files_by_name_keyword")
+                find_result = _decode_mcp_tool_result(find_payload)
+                if isinstance(find_result, dict):
+                    files = find_result.get("files")
+                    if isinstance(files, list):
+                        matching_files = [str(item) for item in files]
+                normalized_probe_path = path_in_project.replace("\\", "/").lower()
+                find_file_ok = any(
+                    candidate.replace("\\", "/").lower() == normalized_probe_path
+                    or candidate.replace("\\", "/").lower().endswith(f"/{probe_target.name.lower()}")
+                    or candidate.replace("\\", "/").lower() == probe_target.name.lower()
+                    for candidate in matching_files
+                )
+                _record_step(
+                    "find_probe_file",
+                    find_file_ok,
+                    detail="located the probe file by name inside the IDE index" if find_file_ok else "JetBrains MCP file-name search did not find the probe file",
+                    evidence={"files": matching_files[:20]},
+                )
+
+                directory_tree_payload = session.call_tool(
+                    "list_directory_tree",
+                    {
+                        "directoryPath": workflow_probe_dir_in_project,
+                        "maxDepth": 3,
+                        "timeout": 15000,
+                        "projectPath": str(project_root),
+                    },
+                )
+                _raise_for_mcp_tool_error(directory_tree_payload, "list_directory_tree")
+                workflow_tools_used.append("list_directory_tree")
+                directory_tree_result = _decode_mcp_tool_result(directory_tree_payload)
+                if isinstance(directory_tree_result, dict):
+                    directory_tree = str(directory_tree_result.get("tree") or "")
+                    errors = directory_tree_result.get("errors")
+                    if isinstance(errors, list):
+                        directory_tree_errors = [str(item) for item in errors]
+                directory_tree_ok = probe_target.name in directory_tree
+                _record_step(
+                    "list_probe_directory",
+                    directory_tree_ok,
+                    detail="listed the workflow probe directory through JetBrains MCP" if directory_tree_ok else "JetBrains MCP directory tree did not include the probe file",
+                    evidence={
+                        "tree_preview": directory_tree[:300],
+                        "errors": directory_tree_errors[:10],
+                    },
+                )
+
+                search_payload = session.call_tool(
+                    "search_in_files_by_text",
+                    {
+                        "searchText": workflow_marker,
+                        "directoryToSearch": workflow_probe_dir_in_project,
+                        "maxUsageCount": 20,
+                        "timeout": 15000,
+                        "projectPath": str(project_root),
+                    },
+                )
+                _raise_for_mcp_tool_error(search_payload, "search_in_files_by_text")
+                workflow_tools_used.append("search_in_files_by_text")
+                search_result = _decode_mcp_tool_result(search_payload)
+                if isinstance(search_result, dict):
+                    entries = search_result.get("entries")
+                    if isinstance(entries, list):
+                        search_entries = [entry for entry in entries if isinstance(entry, dict)]
+                search_ok = any(str(entry.get("filePath") or "") == path_in_project for entry in search_entries)
+                _record_step(
+                    "search_project_text",
+                    search_ok,
+                    detail="searched the project and found the workflow marker" if search_ok else "JetBrains MCP search did not find the workflow marker in the probe file",
+                    evidence={"entries": search_entries[:5]},
+                )
+
+                time.sleep(0.5)
+                problems_payload = session.call_tool(
+                    "get_file_problems",
+                    {
+                        "filePath": path_in_project,
+                        "errorsOnly": True,
+                        "timeout": 15000,
+                        "projectPath": str(project_root),
+                    },
+                )
+                _raise_for_mcp_tool_error(problems_payload, "get_file_problems")
+                workflow_tools_used.append("get_file_problems")
+                problems_result = _decode_mcp_tool_result(problems_payload)
+                if isinstance(problems_result, dict):
+                    errors = problems_result.get("errors")
+                    if isinstance(errors, list):
+                        problems = [item for item in errors if isinstance(item, dict)]
+                problems_count = len(problems)
+                problems_ok = problems_count == 0
+                _record_step(
+                    "inspect_file_problems",
+                    problems_ok,
+                    detail="PyCharm reported no file errors for the workflow probe" if problems_ok else f"PyCharm reported {problems_count} file errors for the workflow probe",
+                    evidence={"problems": problems[:5]},
+                )
+
+                terminal_payload = session.call_tool(
+                    "execute_terminal_command",
+                    {
+                        "command": f"cmd /c echo {terminal_marker}",
+                        "timeout": 15000,
+                        "maxLinesCount": 50,
+                        "truncateMode": "END",
+                        "projectPath": str(project_root),
+                    },
+                )
+                _raise_for_mcp_tool_error(terminal_payload, "execute_terminal_command")
+                workflow_tools_used.append("execute_terminal_command")
+                terminal_result = _decode_mcp_tool_result(terminal_payload)
+                if isinstance(terminal_result, dict):
+                    terminal_output = str(terminal_result.get("command_output") or "")
+                    exit_code = terminal_result.get("command_exit_code")
+                    if isinstance(exit_code, int):
+                        terminal_exit_code = exit_code
+                terminal_ok = terminal_exit_code == 0 and terminal_marker in terminal_output
+                _record_step(
+                    "execute_terminal_command",
+                    terminal_ok,
+                    detail="executed a terminal command through the IDE" if terminal_ok else "IDE terminal command did not return the expected output",
+                    evidence={"command_output": terminal_output, "command_exit_code": terminal_exit_code},
+                )
+        except Exception as exc:
+            workflow_exception = str(exc)
+            blockers.append(workflow_exception)
+
+        blockers = dedupe_keep_order(blockers)
+        all_required_steps_ok = workflow_exception is None and required_steps_total > 0 and required_steps_ok == required_steps_total
+        workflow_tools_used = dedupe_keep_order(workflow_tools_used)
+        payload = {
+            "profile": "ide-workflow",
+            "status": "ok" if all_required_steps_ok else "blocked",
+            "requested_target": str(resolved_target),
+            "target": str(probe_target),
+            "target_kind": "file",
+            "app_path": str(spec["app_path"]),
+            "launcher_path": str(spec["launcher_path"]),
+            "install_root": str(spec["install_root"]),
+            "process_root": str(spec["process_root"]),
+            "family": spec["family"],
+            "command": launch["command"],
+            "launch_pid": launch["launch_pid"],
+            "returncode": launch["returncode"],
+            "process_count_before": launch["process_count_before"],
+            "process_count": len(launch["processes"]),
+            "new_process_count": launch["new_process_count"],
+            "processes": launch["processes"],
+            "windows": launch["window_titles"],
+            "window_name": matched_window.title if matched_window is not None else (launch["window_titles"][0] if launch["window_titles"] else ""),
+            "window_handle": matched_window.hwnd if matched_window is not None else 0,
+            "opened_target": active_file_path == path_in_project or path_in_project in open_files,
+            "workflow_target": str(probe_target),
+            "workflow_path_in_project": path_in_project,
+            "workflow_probe_directory": workflow_probe_dir_in_project,
+            "workflow_symbol_name": symbol_name,
+            "workflow_renamed_symbol": renamed_symbol_name,
+            "workflow_marker": workflow_marker,
+            "workflow_tools_used": workflow_tools_used,
+            "mcp_base_url": mcp_base_url,
+            "mcp_tool_count": mcp_tool_count,
+            "mcp_active_file_path": active_file_path,
+            "mcp_open_files": open_files,
+            "read_ok": read_ok,
+            "read_preview": read_text[:200],
+            "symbol_info_ok": symbol_info_ok,
+            "symbol_info_declaration": symbol_info_declaration[:200],
+            "symbol_info_preview": symbol_info_documentation[:200],
+            "rename_ok": rename_ok,
+            "rename_response": rename_response_text[:200],
+            "renamed_preview": renamed_text[:200],
+            "write_ok": write_ok,
+            "reformat_ok": reformat_ok,
+            "find_file_ok": find_file_ok,
+            "matching_files": matching_files[:20],
+            "directory_tree_ok": directory_tree_ok,
+            "directory_tree_preview": directory_tree[:300],
+            "directory_tree_errors": directory_tree_errors[:10],
+            "search_ok": search_ok,
+            "search_entries": search_entries[:10],
+            "problems_ok": problems_ok,
+            "problems_count": problems_count,
+            "terminal_ok": terminal_ok,
+            "terminal_exit_code": terminal_exit_code,
+            "terminal_marker": terminal_marker,
+            "terminal_output": terminal_output,
+            "final_preview": final_text[:200],
+            "required_steps_total": required_steps_total,
+            "required_steps_ok": required_steps_ok,
+            "all_required_steps_ok": all_required_steps_ok,
+            "workflow_steps": workflow_steps,
+            "duration_seconds": launch["duration_seconds"],
+            "detected_blockers": launch["detected_blockers"],
+            "blockers": blockers,
+        }
+        return payload
+
+    payload = run_with_strategy_pivots(
+        profile="ide-workflow",
+        preflight=[
+            PreflightCheck(
+                name="ide_workflow_target_exists",
+                run=lambda: path_exists_check("ide_workflow_target_exists", str(resolved_target)),
+            ),
+            PreflightCheck(
+                name="ide_workflow_app_exists",
+                run=lambda: path_exists_check("ide_workflow_app_exists", str(app_path)),
+            ),
+        ],
+        primary_attempts=[
+            AttemptSpec(name="ide_workflow", strategy="direct_script", run=_attempt),
+        ],
+        pivot_builder=lambda raw_payload: ([], []),
+    )
+    payload["profile"] = "ide-workflow"
+    payload = _finalize_payload("ide-workflow", payload)
+    report_path = output_dir / "result.json"
+    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    payload["report_path"] = str(report_path)
+    payload = _record_payload("ide-workflow", payload)
+    if payload.get("status") not in {"ok", "partial", "blocked"}:
+        raise RuntimeError(payload.get("error", "ide-workflow smoke failed"))
+    return payload
+
+
+def _resolve_ide_spec(app_path: Path) -> dict[str, Any]:
+    resolved = app_path.expanduser().resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"IDE app path not found: {resolved}")
+
+    family = _detect_ide_family(resolved)
+    if family is None:
+        raise RuntimeError(f"Unsupported IDE family for path: {resolved}")
+
+    install_root = _detect_ide_install_root(resolved)
+    if family == "jetbrains":
+        launcher_path = _resolve_jetbrains_launcher(resolved, install_root)
+    else:
+        launcher_path = _resolve_code_family_launcher(resolved, install_root)
+
+    return {
+        "family": family,
+        "app_path": resolved,
+        "install_root": install_root,
+        "process_root": install_root,
+        "launcher_path": launcher_path,
+    }
+
+
+def _detect_ide_family(app_path: Path) -> str | None:
+    lowered_path = str(app_path).lower().replace("\\", "/")
+    normalized_stem = _normalized_ide_stem(app_path)
+
+    if app_path.is_dir():
+        bin_dir = app_path / "bin"
+        if (app_path / "product-info.json").exists() or (bin_dir / "inspect.bat").exists():
+            return "jetbrains"
+        if any((bin_dir / f"{stem}.cmd").exists() or (bin_dir / f"{stem}.exe").exists() for stem in CODE_IDE_STEMS):
+            return "code_family"
+
+    if normalized_stem in JETBRAINS_IDE_STEMS:
+        return "jetbrains"
+    if normalized_stem in CODE_IDE_STEMS:
+        return "code_family"
+
+    if app_path.parent.name.lower() == "bin":
+        install_root = app_path.parent.parent
+        if (install_root / "product-info.json").exists() or (app_path.parent / "inspect.bat").exists():
+            return "jetbrains"
+        if any((app_path.parent / f"{stem}.cmd").exists() for stem in CODE_IDE_STEMS):
+            return "code_family"
+
+    if any(stem in lowered_path for stem in JETBRAINS_IDE_STEMS):
+        return "jetbrains"
+    if any(stem in lowered_path for stem in CODE_IDE_STEMS):
+        return "code_family"
+    return None
+
+
+def _detect_ide_install_root(app_path: Path) -> Path:
+    if app_path.is_dir():
+        return app_path
+    if app_path.parent.name.lower() == "bin":
+        return app_path.parent.parent
+    return app_path.parent
+
+
+def _resolve_jetbrains_launcher(app_path: Path, install_root: Path) -> Path:
+    bin_dir = install_root / "bin"
+    if app_path.is_file() and app_path.suffix.lower() in {".bat", ".cmd"}:
+        return app_path
+
+    candidates: list[Path] = []
+    normalized_stem = _normalized_ide_stem(app_path)
+    if normalized_stem:
+        candidates.extend(
+            [
+                bin_dir / f"{normalized_stem}.bat",
+                bin_dir / f"{normalized_stem}.cmd",
+            ]
+        )
+    if app_path.is_dir():
+        lowered_name = app_path.name.lower()
+        for stem in JETBRAINS_IDE_STEMS:
+            if stem in lowered_name:
+                candidates.append(bin_dir / f"{stem}.bat")
+    candidates.extend(
+        sorted(
+            path
+            for path in [*bin_dir.glob("*.bat"), *bin_dir.glob("*.cmd")]
+            if path.stem.lower() not in JETBRAINS_UTILITY_STEMS
+        )
+    )
+
+    for candidate in _dedupe_paths(candidates):
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"Could not resolve a JetBrains launcher under: {bin_dir}")
+
+
+def _resolve_code_family_launcher(app_path: Path, install_root: Path) -> Path:
+    bin_dir = install_root / "bin"
+    candidates = [
+        *(bin_dir / f"{stem}.cmd" for stem in CODE_IDE_STEMS),
+        *(bin_dir / f"{stem}.bat" for stem in CODE_IDE_STEMS),
+        *(bin_dir / f"{stem}.exe" for stem in CODE_IDE_STEMS),
+        *bin_dir.glob("*.cmd"),
+        *bin_dir.glob("*.bat"),
+        *bin_dir.glob("*.exe"),
+    ]
+    if app_path.is_file():
+        candidates.append(app_path)
+    for candidate in _dedupe_paths(candidates):
+        if candidate.exists():
+            return candidate
+    if app_path.exists():
+        return app_path
+    raise FileNotFoundError(f"Could not resolve an IDE launcher under: {bin_dir}")
+
+
+def _launch_ide_target(
+    *,
+    target: Path,
+    app_path: Path,
+    output_dir: Path,
+    timeout: float,
+    line: int | None = None,
+    column: int | None = None,
+) -> dict[str, Any]:
+    spec = _resolve_ide_spec(app_path)
+    target_tokens = _ide_target_tokens(target)
+    before_processes = _list_processes_under_root(spec["process_root"])
+    before_process_ids = [int(item["pid"]) for item in before_processes]
+    before_windows = list_top_level_windows(
+        process_ids=before_process_ids,
+        visible_only=True,
+    )
+    user_data_dir = output_dir / "user-data" if spec["family"] == "code_family" else None
+    if user_data_dir is not None:
+        user_data_dir.mkdir(parents=True, exist_ok=True)
+    command = _build_ide_open_command(
+        family=str(spec["family"]),
+        launcher_path=Path(spec["launcher_path"]),
+        target=target,
+        project_path=_ide_project_context(target, family=str(spec["family"])),
+        isolated_user_data_dir=user_data_dir,
+        line=line,
+        column=column,
+    )
+    start = time.time()
+    proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    processes, windows, matched_window = _wait_for_ide_target_window(
+        process_root=Path(spec["process_root"]),
+        target_tokens=target_tokens,
+        timeout=timeout,
+        before_process_ids=before_process_ids,
+        before_windows=before_windows,
+    )
+    duration_seconds = round(time.time() - start, 3)
+    before_pids = {int(item["pid"]) for item in before_processes}
+    after_pids = {int(item["pid"]) for item in processes}
+    detected_blockers = _collect_ide_window_blockers(windows)
+    if user_data_dir is not None:
+        detected_blockers.extend(_collect_ide_log_blockers(user_data_dir))
+        detected_blockers = dedupe_keep_order(detected_blockers)
+    return {
+        "spec": spec,
+        "target_tokens": target_tokens,
+        "command": command,
+        "launch_pid": proc.pid,
+        "returncode": proc.poll() if proc.poll() is not None else 0,
+        "process_count_before": len(before_processes),
+        "new_process_count": len(after_pids - before_pids),
+        "processes": processes,
+        "windows": windows,
+        "window_titles": [window.title for window in windows if window.title],
+        "matched_window": matched_window,
+        "duration_seconds": duration_seconds,
+        "detected_blockers": detected_blockers,
+    }
+
+
+def _build_ide_open_command(
+    *,
+    family: str,
+    launcher_path: Path,
+    target: Path,
+    project_path: Path | None = None,
+    isolated_user_data_dir: Path | None = None,
+    line: int | None = None,
+    column: int | None = None,
+) -> list[str]:
+    normalized_line = max(1, line) if line is not None else None
+    normalized_column = max(1, column) if column is not None else None
+    file_target = _is_probably_file_target(target)
+    args: list[str] = []
+    if family == "code_family":
+        args.extend(["--new-window", "--disable-extensions"])
+        if isolated_user_data_dir is not None:
+            args.extend(["--user-data-dir", str(isolated_user_data_dir)])
+        if file_target:
+            goto_line = normalized_line or 1
+            goto_column = normalized_column or 1
+            args.extend(["--goto", _build_code_family_goto_target(target, goto_line, goto_column)])
+        else:
+            if project_path is not None:
+                args.append(str(project_path))
+            args.append(str(target))
+    else:
+        if project_path is not None:
+            args.append(str(project_path))
+        if normalized_line is not None:
+            args.extend(["--line", str(normalized_line)])
+            if normalized_column is not None:
+                args.extend(["--column", str(normalized_column)])
+        args.append(str(target))
+    if launcher_path.suffix.lower() in {".bat", ".cmd"}:
+        return ["cmd", "/c", str(launcher_path), *args]
+    return [str(launcher_path), *args]
+
+
+def _build_code_family_goto_target(target: Path, line: int, column: int | None) -> str:
+    suffix = f":{line}"
+    if column is not None:
+        suffix += f":{column}"
+    return f"{target}{suffix}"
+
+
+def _wait_for_ide_target_window(
+    *,
+    process_root: Path,
+    target_tokens: list[str],
+    timeout: float,
+    before_process_ids: list[int] | None = None,
+    before_windows: list[TopLevelWindowInfo] | None = None,
+) -> tuple[list[dict[str, Any]], list[TopLevelWindowInfo], TopLevelWindowInfo | None]:
+    deadline = time.time() + timeout
+    last_processes: list[dict[str, Any]] = []
+    last_windows: list[TopLevelWindowInfo] = []
+    while time.time() < deadline:
+        processes = _list_processes_under_root(process_root)
+        windows = list_top_level_windows(
+            process_ids=[int(item["pid"]) for item in processes],
+            visible_only=True,
+        )
+        matched = _select_ide_target_window(
+            windows,
+            target_tokens,
+            before_process_ids=before_process_ids,
+            before_windows=before_windows,
+        )
+        if matched is not None:
+            return processes, windows, matched
+        last_processes = processes
+        last_windows = windows
+        time.sleep(0.5)
+    return last_processes, last_windows, None
+
+
+def _list_processes_under_root(root: Path) -> list[dict[str, Any]]:
+    escaped_root = str(root).replace("'", "''")
+    script = f"""
+$root = [System.IO.Path]::GetFullPath('{escaped_root}')
+$items = Get-CimInstance Win32_Process |
+  Where-Object {{
+    $_.ExecutablePath -and
+    ([System.IO.Path]::GetFullPath($_.ExecutablePath)).StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)
+  }} |
+  Select-Object @{{n='pid';e={{$_.ProcessId}}}},
+                @{{n='name';e={{$_.Name}}}},
+                @{{n='path';e={{$_.ExecutablePath}}}},
+                @{{n='command_line';e={{$_.CommandLine}}}}
+if ($items) {{ $items | ConvertTo-Json -Depth 4 -Compress }}
+"""
+    return _powershell_json_list(script)
+
+
+def _powershell_json_list(script: str) -> list[dict[str, Any]]:
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    stdout = (result.stdout or "").strip()
+    if not stdout:
+        return []
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(payload, list):
+        return payload
+    return [payload]
+
+
+def _ide_target_tokens(target: Path) -> list[str]:
+    is_probably_file = _is_probably_file_target(target)
+    tokens = [target.name]
+    if is_probably_file:
+        tokens.append(target.parent.name)
+    else:
+        tokens.append(display_name_from_target(str(target)))
+    return [token for token in dedupe_keep_order([item for item in tokens if item]) if len(token) >= 2]
+
+
+def _ide_window_matches_target(title: str, target_tokens: list[str]) -> bool:
+    lowered_title = title.lower()
+    if not target_tokens:
+        return False
+    if target_tokens[0].lower() not in lowered_title:
+        return False
+    if len(target_tokens) == 1:
+        return True
+    return all(token.lower() in lowered_title for token in target_tokens[1:])
+
+
+def _select_ide_target_window(
+    windows: list[TopLevelWindowInfo],
+    target_tokens: list[str],
+    *,
+    before_process_ids: list[int] | None = None,
+    before_windows: list[TopLevelWindowInfo] | None = None,
+) -> TopLevelWindowInfo | None:
+    baseline_process_ids = {int(item) for item in (before_process_ids or [])}
+    baseline_hwnds = {int(window.hwnd) for window in (before_windows or [])}
+    scored_candidates: list[tuple[int, bool, TopLevelWindowInfo]] = []
+    for window in windows:
+        if not window.title:
+            continue
+        score = _ide_window_match_score(window.title, target_tokens)
+        if score > 0:
+            is_new_window = window.hwnd not in baseline_hwnds or window.process_id not in baseline_process_ids
+            scored_candidates.append((score, is_new_window, window))
+    if not scored_candidates:
+        return None
+    fresh_candidates = [item for item in scored_candidates if item[1]]
+    candidate_pool = fresh_candidates or scored_candidates
+    contextual_candidates = [item for item in candidate_pool if item[0] > 1]
+    if contextual_candidates:
+        contextual_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return contextual_candidates[0][2]
+    if len(candidate_pool) == 1:
+        return candidate_pool[0][2]
+    return None
+
+
+def _ide_window_match_score(title: str, target_tokens: list[str]) -> int:
+    lowered_title = title.lower()
+    if not target_tokens:
+        return 0
+    if target_tokens[0].lower() not in lowered_title:
+        return 0
+    score = 1
+    for token in target_tokens[1:]:
+        if token.lower() in lowered_title:
+            score += 1
+    return score
+
+
+def _ide_project_context(target: Path, *, family: str) -> Path | None:
+    if _is_probably_file_target(target):
+        if family == "jetbrains":
+            return None
+        return target.parent
+    return None
+
+
+def _collect_ide_window_blockers(windows: list[TopLevelWindowInfo]) -> list[str]:
+    labels = [window.title for window in windows if window.title]
+    for window in windows:
+        if window.hwnd:
+            labels.extend(_ide_window_descendant_names(window.hwnd))
+    return _detect_ide_blockers(labels)
+
+
+def _collect_ide_log_blockers(user_data_dir: Path) -> list[str]:
+    log_root = user_data_dir / "logs"
+    if not log_root.exists():
+        return []
+    blockers: list[str] = []
+    for log_path in sorted(log_root.glob("*/main.log"), reverse=True):
+        try:
+            log_text = log_path.read_text(encoding="utf-8", errors="replace").lower()
+        except OSError:
+            continue
+        for pattern, reason in IDE_LOG_BLOCKER_PATTERNS.items():
+            if pattern in log_text:
+                blockers.append(reason)
+    return dedupe_keep_order(blockers)
+
+
+def _detect_ide_blockers(labels: list[str]) -> list[str]:
+    lowered_labels = [label.lower() for label in labels if label]
+    blockers: list[str] = []
+    for pattern, reason in IDE_BLOCKER_PATTERNS.items():
+        if any(pattern in label for label in lowered_labels):
+            blockers.append(reason)
+    return dedupe_keep_order(blockers)
+
+
+def _ide_window_descendant_names(hwnd: int) -> list[str]:
+    script = f"""
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$cond = New-Object System.Windows.Automation.PropertyCondition(
+  [System.Windows.Automation.AutomationElement]::NativeWindowHandleProperty,
+  {int(hwnd)}
+)
+$window = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
+if ($null -eq $window) {{ return }}
+$items = @()
+$desc = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+for ($i = 0; $i -lt [Math]::Min($desc.Count, 80); $i++) {{
+  $el = $desc.Item($i)
+  if ($el.Current.Name) {{
+    $items += [pscustomobject]@{{ name = $el.Current.Name }}
+  }}
+}}
+if ($items) {{ $items | ConvertTo-Json -Depth 3 -Compress }}
+"""
+    return [str(item.get("name") or "") for item in _powershell_json_list(script) if item.get("name")]
+
+
+def _apply_jetbrains_mcp_file_write(*, target: Path, app_path: Path, marker: str) -> dict[str, Any]:
+    project_root = _guess_jetbrains_project_root(target)
+    try:
+        path_in_project = str(target.relative_to(project_root))
+    except ValueError:
+        return {
+            "status": "error",
+            "transport": "jetbrains_mcp",
+            "error": f"target is outside the inferred project root: {project_root}",
+        }
+
+    original = _read_text_lossy(target)
+    line_ending = _detect_line_ending(original)
+    marker_line_text = _render_ide_marker_line(target, marker)
+    if marker in original:
+        updated = original
+        changed = False
+    else:
+        separator = "" if not original or original.endswith(("\r\n", "\n")) else line_ending
+        updated = f"{original}{separator}{marker_line_text}{line_ending}"
+        changed = True
+
+    last_error = "JetBrains MCP server was not reachable."
+    for base_url in _candidate_jetbrains_mcp_base_urls(app_path):
+        try:
+            with _JetBrainsMcpSession(base_url=base_url, timeout=10.0) as session:
+                tools = [str(tool.get("name") or "") for tool in session.list_tools() if tool.get("name")]
+                open_payload = session.call_tool(
+                    "open_file_in_editor",
+                    {
+                        "filePath": path_in_project,
+                        "projectPath": str(project_root),
+                    },
+                )
+                _raise_for_mcp_tool_error(open_payload, "open_file_in_editor")
+                if changed:
+                    replace_payload = session.call_tool(
+                        "replace_text_in_file",
+                        {
+                            "pathInProject": path_in_project,
+                            "oldText": original,
+                            "newText": updated,
+                            "replaceAll": False,
+                            "caseSensitive": True,
+                            "projectPath": str(project_root),
+                        },
+                    )
+                    _raise_for_mcp_tool_error(replace_payload, "replace_text_in_file")
+                read_payload = session.call_tool(
+                    "get_file_text_by_path",
+                    {
+                        "pathInProject": path_in_project,
+                        "truncateMode": "NONE",
+                        "projectPath": str(project_root),
+                    },
+                )
+                _raise_for_mcp_tool_error(read_payload, "get_file_text_by_path")
+                readback_text = _mcp_response_text(read_payload)
+                open_files_payload = session.call_tool(
+                    "get_all_open_file_paths",
+                    {"projectPath": str(project_root)},
+                )
+                _raise_for_mcp_tool_error(open_files_payload, "get_all_open_file_paths")
+                open_files = _decode_mcp_tool_result(open_files_payload)
+                open_files_list = []
+                active_file_path = None
+                if isinstance(open_files, dict):
+                    active_file_path = open_files.get("activeFilePath")
+                    listed = open_files.get("openFiles")
+                    if isinstance(listed, list):
+                        open_files_list = [str(item) for item in listed]
+                marker_written = marker in readback_text or _wait_for_file_marker(target, marker, timeout=2.0)
+                return {
+                    "status": "ok" if marker_written else "error",
+                    "transport": "jetbrains_mcp",
+                    "mcp_base_url": base_url,
+                    "mcp_project_path": str(project_root),
+                    "mcp_path_in_project": path_in_project,
+                    "mcp_used_tools": [
+                        "open_file_in_editor",
+                        *([] if not changed else ["replace_text_in_file"]),
+                        "get_file_text_by_path",
+                        "get_all_open_file_paths",
+                    ],
+                    "mcp_tool_count": len(tools),
+                    "mcp_active_file_path": active_file_path,
+                    "mcp_open_files": open_files_list,
+                    "changed": changed,
+                    "line_ending": "crlf" if line_ending == "\r\n" else "lf",
+                    "marker_line_text": marker_line_text,
+                    "marker_line": _find_marker_line(readback_text or updated, marker),
+                    "error": None if marker_written else "JetBrains MCP write did not persist the marker.",
+                }
+        except Exception as exc:
+            last_error = str(exc)
+    return {
+        "status": "error",
+        "transport": "jetbrains_mcp",
+        "error": last_error,
+    }
+
+
+@contextmanager
+def _open_jetbrains_mcp_session(app_path: Path, *, timeout: float):
+    last_error = "JetBrains MCP server was not reachable."
+    for base_url in _candidate_jetbrains_mcp_base_urls(app_path):
+        try:
+            with _JetBrainsMcpSession(base_url=base_url, timeout=timeout) as session:
+                yield session
+                return
+        except Exception as exc:
+            last_error = str(exc)
+    raise RuntimeError(last_error)
+
+
+class _JetBrainsMcpSession:
+    def __init__(self, *, base_url: str, timeout: float) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self._endpoint_url: str | None = None
+        self._stream: Any = None
+        self._next_id = 1
+
+    def __enter__(self) -> "_JetBrainsMcpSession":
+        self._stream = urlopen(
+            Request(f"{self.base_url}/sse", headers={"Accept": "text/event-stream"}),
+            timeout=self.timeout,
+        )
+        endpoint = None
+        deadline = time.time() + self.timeout
+        while time.time() < deadline:
+            event = self._read_event()
+            if event is None:
+                break
+            if event["event"] == "endpoint" and event["data"].startswith("/"):
+                endpoint = event["data"]
+                break
+        if endpoint is None:
+            raise RuntimeError(f"JetBrains MCP SSE endpoint was not announced by {self.base_url}")
+        self._endpoint_url = f"{self.base_url}{endpoint}"
+        init_response = self._request(
+            "initialize",
+            {
+                "protocolVersion": JETBRAINS_MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "OmniControl",
+                    "version": "0.1",
+                },
+            },
+        )
+        if "error" in init_response:
+            raise RuntimeError(str(init_response["error"]))
+        self._post_json({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._stream is not None:
+            try:
+                self._stream.close()
+            except OSError:
+                pass
+        self._stream = None
+        self._endpoint_url = None
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        response = self._request("tools/list", {})
+        result = response.get("result")
+        if not isinstance(result, dict):
+            return []
+        tools = result.get("tools")
+        if isinstance(tools, list):
+            return [tool for tool in tools if isinstance(tool, dict)]
+        return []
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self._request(
+            "tools/call",
+            {
+                "name": name,
+                "arguments": arguments,
+            },
+        )
+
+    def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        request_id = self._next_request_id()
+        self._post_json(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            }
+        )
+        response = self._wait_for_response(request_id)
+        if not isinstance(response, dict):
+            raise RuntimeError(f"JetBrains MCP returned a non-dict response for {method}")
+        return response
+
+    def _next_request_id(self) -> int:
+        current = self._next_id
+        self._next_id += 1
+        return current
+
+    def _post_json(self, payload: dict[str, Any]) -> None:
+        if self._endpoint_url is None:
+            raise RuntimeError("JetBrains MCP endpoint is not initialized.")
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = Request(
+            self._endpoint_url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        with urlopen(request, timeout=self.timeout) as response:
+            response.read()
+
+    def _wait_for_response(self, request_id: int) -> dict[str, Any]:
+        deadline = time.time() + self.timeout
+        while time.time() < deadline:
+            event = self._read_event()
+            if event is None:
+                break
+            if event["event"] != "message":
+                continue
+            try:
+                payload = json.loads(event["data"])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and payload.get("id") == request_id:
+                return payload
+        raise RuntimeError(f"Timed out waiting for JetBrains MCP response {request_id}.")
+
+    def _read_event(self) -> dict[str, str] | None:
+        if self._stream is None:
+            return None
+        event_type = "message"
+        data_lines: list[str] = []
+        while True:
+            raw_line = self._stream.readline()
+            if not raw_line:
+                return None
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+            if line == "":
+                return {
+                    "event": event_type,
+                    "data": "\n".join(data_lines),
+                }
+            if line.startswith("event: "):
+                event_type = line[len("event: ") :]
+            elif line.startswith("data: "):
+                data_lines.append(line[len("data: ") :])
+
+
+def _wait_for_jetbrains_open_file(
+    session: _JetBrainsMcpSession,
+    *,
+    project_path: Path,
+    path_in_project: str,
+    timeout: float,
+) -> dict[str, Any]:
+    deadline = time.time() + timeout
+    last_payload: dict[str, Any] = {"result": {"structuredContent": {"activeFilePath": None, "openFiles": []}}}
+    while time.time() < deadline:
+        payload = session.call_tool(
+            "get_all_open_file_paths",
+            {"projectPath": str(project_path)},
+        )
+        last_payload = payload
+        result = _decode_mcp_tool_result(payload)
+        if isinstance(result, dict):
+            active = result.get("activeFilePath")
+            open_files = result.get("openFiles")
+            if active == path_in_project:
+                return payload
+            if isinstance(open_files, list) and path_in_project in [str(item) for item in open_files]:
+                return payload
+        time.sleep(0.5)
+    return last_payload
+
+
+def _candidate_jetbrains_mcp_base_urls(app_path: Path) -> list[str]:
+    return [f"http://127.0.0.1:{port}" for port in _candidate_jetbrains_mcp_ports(app_path)]
+
+
+def _candidate_jetbrains_mcp_ports(app_path: Path) -> list[int]:
+    ports = [JETBRAINS_MCP_DEFAULT_PORT]
+    for config_path in _jetbrains_mcp_config_paths(app_path):
+        port = _extract_jetbrains_mcp_port(config_path)
+        if port is not None:
+            ports.insert(0, port)
+    return [int(port) for port in dedupe_keep_order(ports)]
+
+
+def _jetbrains_mcp_config_paths(app_path: Path) -> list[Path]:
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return []
+    jetbrains_root = Path(appdata) / "JetBrains"
+    if not jetbrains_root.exists():
+        return []
+    search_tokens = {
+        _normalized_ide_stem(app_path),
+        _detect_ide_install_root(app_path).name.lower(),
+    }
+    configs: list[Path] = []
+    for config_dir in jetbrains_root.iterdir():
+        lowered_name = config_dir.name.lower()
+        if not any(token and token in lowered_name for token in search_tokens):
+            continue
+        config_path = config_dir / "options" / "mcpServer.xml"
+        if config_path.exists():
+            configs.append(config_path)
+    return sorted(configs, reverse=True)
+
+
+def _extract_jetbrains_mcp_port(config_path: Path) -> int | None:
+    try:
+        root = ET.fromstring(config_path.read_text(encoding="utf-8"))
+    except (ET.ParseError, OSError):
+        return None
+    component = None
+    for candidate in root.findall("component"):
+        if candidate.attrib.get("name") == JETBRAINS_MCP_COMPONENT_NAME:
+            component = candidate
+            break
+    if component is None:
+        return None
+    enabled = None
+    port = None
+    for option in component.findall("option"):
+        name = option.attrib.get("name")
+        value = option.attrib.get("value")
+        if name == "enableMcpServer":
+            enabled = str(value).lower() == "true"
+        if name == "mcpServerPort":
+            try:
+                port = int(str(value))
+            except (TypeError, ValueError):
+                port = None
+    if enabled is False:
+        return None
+    return port
+
+
+def _guess_jetbrains_project_root(target: Path) -> Path:
+    cwd = Path.cwd().resolve()
+    try:
+        target.relative_to(cwd)
+    except ValueError:
+        return target.parent
+    return cwd
+
+
+def _raise_for_mcp_tool_error(response: dict[str, Any], tool_name: str) -> None:
+    if "error" in response:
+        raise RuntimeError(f"JetBrains MCP {tool_name} failed: {response['error']}")
+    result = response.get("result")
+    if isinstance(result, dict) and result.get("isError"):
+        detail = _mcp_response_text(response)
+        if detail:
+            raise RuntimeError(f"JetBrains MCP {tool_name} failed: {detail}")
+        raise RuntimeError(f"JetBrains MCP {tool_name} failed.")
+
+
+def _decode_mcp_tool_result(response: dict[str, Any]) -> Any:
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return response
+    structured = result.get("structuredContent")
+    if structured is not None:
+        return structured
+    text = _mcp_response_text(response)
+    if not text:
+        return result
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def _mcp_response_text(response: dict[str, Any]) -> str:
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return ""
+    parts: list[str] = []
+    content = result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text") or ""))
+    return "\n".join(part for part in parts if part)
+
+
+def _apply_safe_ide_file_write(*, target: Path, marker: str) -> dict[str, Any]:
+    try:
+        original = _read_text_lossy(target)
+        line_ending = _detect_line_ending(original)
+        updated = original
+        if marker not in original:
+            marker_line_text = _render_ide_marker_line(target, marker)
+            separator = "" if not original or original.endswith(("\r\n", "\n")) else line_ending
+            updated = f"{original}{separator}{marker_line_text}{line_ending}"
+            target.write_text(updated, encoding="utf-8")
+            changed = True
+        else:
+            marker_line_text = _render_ide_marker_line(target, marker)
+            changed = False
+        return {
+            "status": "ok",
+            "transport": "file_format",
+            "changed": changed,
+            "line_ending": "crlf" if line_ending == "\r\n" else "lf",
+            "marker_line_text": marker_line_text,
+            "marker_line": _find_marker_line(updated, marker),
+        }
+    except Exception as exc:  # pragma: no cover - defensive filesystem edge
+        return {
+            "status": "error",
+            "transport": "file_format",
+            "error": str(exc),
+        }
+
+
+def _detect_line_ending(text: str) -> str:
+    if "\r\n" in text:
+        return "\r\n"
+    return "\n"
+
+
+def _find_marker_line(text: str, marker: str) -> int:
+    for index, line in enumerate(text.splitlines(), start=1):
+        if marker in line:
+            return index
+    return 1
+
+
+def _render_ide_marker_line(target: Path, marker: str) -> str:
+    suffix = target.suffix.lower()
+    if suffix in IDE_HASH_COMMENT_SUFFIXES:
+        return f"# {marker}"
+    if suffix in IDE_SLASH_COMMENT_SUFFIXES:
+        return f"// {marker}"
+    if suffix in IDE_BLOCK_COMMENT_SUFFIXES:
+        return f"/* {marker} */"
+    if suffix in IDE_XML_COMMENT_SUFFIXES:
+        return f"<!-- {marker} -->"
+    if suffix in {".cmd", ".bat"}:
+        return f"REM {marker}"
+    return marker
+def _wait_for_file_marker(path: Path, marker: str, *, timeout: float) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if marker in _read_text_lossy(path):
+            return True
+        time.sleep(0.5)
+    return marker in _read_text_lossy(path)
+
+
+def _read_text_lossy(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _is_probably_file_target(target: Path) -> bool:
+    return target.is_file() or bool(target.suffix)
+
+
+def _normalized_ide_stem(path: Path) -> str:
+    stem = path.stem.lower()
+    return re.sub(r"64$", "", stem)
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in paths:
+        key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
 
 
 def _finalize_payload(profile: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2191,6 +4059,7 @@ def _metadata_secondary_profile_action_map(
     output_dir: Path,
     source: Path | None = None,
     workspace: Path | None = None,
+    app_path: Path | None = None,
     query: str | None = None,
     url: str | None = None,
     profile_chain: tuple[str, ...] = (),
@@ -2216,6 +4085,7 @@ def _metadata_secondary_profile_action_map(
                 spec,
                 source=source,
                 workspace=workspace,
+                app_path=app_path,
                 query=query,
                 url=url,
             )
@@ -2249,19 +4119,31 @@ def _secondary_profile_invocation_kwargs(
     *,
     source: Path | None = None,
     workspace: Path | None = None,
+    app_path: Path | None = None,
     query: str | None = None,
     url: str | None = None,
 ) -> dict[str, str]:
+    kwargs: dict[str, str] = {}
+    if app_path is not None:
+        kwargs["app_path"] = str(app_path)
     source_arg = spec.get("source_arg")
     if source_arg == "source":
-        return {"source": str(source)} if source is not None else {}
+        if source is not None:
+            kwargs["source"] = str(source)
+        return kwargs
     if source_arg == "workspace":
-        return {"source": str(workspace)} if workspace is not None else {}
+        if workspace is not None:
+            kwargs["source"] = str(workspace)
+        return kwargs
     if source_arg == "query":
-        return {"query": query} if query is not None else {}
+        if query is not None:
+            kwargs["query"] = query
+        return kwargs
     if source_arg == "url":
-        return {"url": url} if url is not None else {}
-    return {}
+        if url is not None:
+            kwargs["url"] = url
+        return kwargs
+    return kwargs
 
 
 def _run_secondary_profile_sidecar(

@@ -7,7 +7,18 @@ from unittest.mock import patch
 
 from omnicontrol.runtime.kb import PROFILE_ACCEPTED_INVOCATION_CONTEXTS, PROFILE_INTERACTION_LEVEL, PROFILE_INVOCATION_CONTEXT, PROFILE_METADATA
 from omnicontrol.runtime.live_smoke import (
+    _apply_safe_ide_file_write,
+    _build_ide_open_command,
     _build_sidecar_partial_payload,
+    _collect_ide_log_blockers,
+    _decode_mcp_tool_result,
+    _detect_ide_family,
+    _detect_ide_blockers,
+    _detect_ide_install_root,
+    _extract_jetbrains_mcp_port,
+    _ide_target_tokens,
+    _ide_project_context,
+    _ide_window_matches_target,
     _metadata_secondary_profile_action_map,
     _qqmusic_build_play_command_xml,
     _qqmusic_build_songinfo_payload,
@@ -16,12 +27,265 @@ from omnicontrol.runtime.live_smoke import (
     _qqmusic_song_detail_url,
     _qqmusic_execute_control_methods,
     _qqmusic_select_candidate,
+    _resolve_code_family_launcher,
+    _resolve_ide_spec,
+    _resolve_jetbrains_launcher,
     _run_cmd_chain,
+    _select_ide_target_window,
 )
 from omnicontrol.runtime.pivots import plan_pivot_candidates
+from omnicontrol.runtime.windows_ipc import TopLevelWindowInfo
 
 
 class LiveSmokeHelperTests(unittest.TestCase):
+    def test_resolve_ide_spec_for_jetbrains_executable_prefers_batch_launcher(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "PyCharm"
+            (root / "bin").mkdir(parents=True)
+            (root / "product-info.json").write_text("{}", encoding="utf-8")
+            (root / "bin" / "pycharm64.exe").write_text("stub", encoding="utf-8")
+            (root / "bin" / "pycharm.bat").write_text("@echo off", encoding="utf-8")
+
+            spec = _resolve_ide_spec(root / "bin" / "pycharm64.exe")
+
+        self.assertEqual(spec["family"], "jetbrains")
+        self.assertEqual(spec["install_root"], root)
+        self.assertEqual(spec["launcher_path"], root / "bin" / "pycharm.bat")
+
+    def test_resolve_ide_spec_for_code_family_directory_prefers_cli_launcher(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Cursor"
+            (root / "bin").mkdir(parents=True)
+            (root / "bin" / "cursor.cmd").write_text("@echo off", encoding="utf-8")
+
+            spec = _resolve_ide_spec(root)
+            command = _build_ide_open_command(
+                family=spec["family"],
+                launcher_path=spec["launcher_path"],
+                target=root / "workspace",
+                isolated_user_data_dir=root / "user-data",
+            )
+
+        self.assertEqual(spec["family"], "code_family")
+        self.assertEqual(spec["launcher_path"], root / "bin" / "cursor.cmd")
+        self.assertEqual(command[:3], ["cmd", "/c", str(root / "bin" / "cursor.cmd")])
+        self.assertIn("--new-window", command)
+        self.assertIn("--user-data-dir", command)
+
+    def test_resolve_ide_spec_for_code_family_executable_prefers_cli_launcher(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Code"
+            (root / "bin").mkdir(parents=True)
+            (root / "Code.exe").write_text("stub", encoding="utf-8")
+            (root / "bin" / "code.cmd").write_text("@echo off", encoding="utf-8")
+
+            spec = _resolve_ide_spec(root / "Code.exe")
+
+        self.assertEqual(spec["family"], "code_family")
+        self.assertEqual(spec["launcher_path"], root / "bin" / "code.cmd")
+
+    def test_ide_family_helpers_recognize_jetbrains_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "WebStorm"
+            (root / "bin").mkdir(parents=True)
+            (root / "product-info.json").write_text("{}", encoding="utf-8")
+            (root / "bin" / "webstorm.bat").write_text("@echo off", encoding="utf-8")
+            (root / "bin" / "webstorm64.exe").write_text("stub", encoding="utf-8")
+
+            family = _detect_ide_family(root / "bin" / "webstorm64.exe")
+            install_root = _detect_ide_install_root(root / "bin" / "webstorm64.exe")
+            launcher = _resolve_jetbrains_launcher(root / "bin" / "webstorm64.exe", install_root)
+
+        self.assertEqual(family, "jetbrains")
+        self.assertEqual(install_root, root)
+        self.assertEqual(launcher, root / "bin" / "webstorm.bat")
+
+    def test_ide_window_matching_uses_target_tokens(self) -> None:
+        tokens = _ide_target_tokens(Path(r"D:\workspace\demo\probe.py"))
+        self.assertIn("probe.py", tokens)
+        self.assertTrue(_ide_window_matches_target("probe.py - demo", tokens))
+        self.assertFalse(_ide_window_matches_target("probe.py - another", tokens))
+        self.assertFalse(_ide_window_matches_target("README.md - another", tokens))
+
+    def test_select_ide_target_window_allows_unique_filename_match(self) -> None:
+        tokens = _ide_target_tokens(Path(r"D:\workspace\demo\probe.py"))
+        selected = _select_ide_target_window(
+            [
+                TopLevelWindowInfo(
+                    hwnd=101,
+                    process_id=1,
+                    class_name="SunAwtFrame",
+                    title="probe.py",
+                    visible=True,
+                ),
+            ],
+            tokens,
+        )
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.hwnd, 101)
+
+    def test_select_ide_target_window_prefers_new_window_when_titles_collide(self) -> None:
+        tokens = _ide_target_tokens(Path(r"D:\workspace\demo\probe.py"))
+        before_window = TopLevelWindowInfo(
+            hwnd=101,
+            process_id=1,
+            class_name="Chrome_WidgetWin_1",
+            title="probe.py - Visual Studio Code",
+            visible=True,
+        )
+        selected = _select_ide_target_window(
+            [
+                before_window,
+                TopLevelWindowInfo(
+                    hwnd=202,
+                    process_id=2,
+                    class_name="Chrome_WidgetWin_1",
+                    title="probe.py - Visual Studio Code",
+                    visible=True,
+                ),
+            ],
+            tokens,
+            before_process_ids=[before_window.process_id],
+            before_windows=[before_window],
+        )
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.hwnd, 202)
+
+    def test_ide_project_context_omits_project_dir_for_jetbrains_file_targets(self) -> None:
+        target = Path(r"D:\workspace\demo\probe.py")
+        self.assertIsNone(_ide_project_context(target, family="jetbrains"))
+        self.assertEqual(_ide_project_context(target, family="code_family"), target.parent)
+
+    def test_build_ide_open_command_adds_line_and_column_for_jetbrains(self) -> None:
+        command = _build_ide_open_command(
+            family="jetbrains",
+            launcher_path=Path(r"D:\PyCharm\bin\pycharm.bat"),
+            project_path=Path(r"D:\workspace\demo"),
+            target=Path(r"D:\workspace\demo\probe.py"),
+            line=12,
+            column=3,
+        )
+        self.assertEqual(
+            command,
+            [
+                "cmd",
+                "/c",
+                r"D:\PyCharm\bin\pycharm.bat",
+                r"D:\workspace\demo",
+                "--line",
+                "12",
+                "--column",
+                "3",
+                r"D:\workspace\demo\probe.py",
+            ],
+        )
+
+    def test_build_ide_open_command_uses_goto_for_code_family(self) -> None:
+        command = _build_ide_open_command(
+            family="code_family",
+            launcher_path=Path(r"D:\Cursor\bin\cursor.cmd"),
+            project_path=Path(r"D:\workspace\demo"),
+            target=Path(r"D:\workspace\demo\probe.py"),
+            isolated_user_data_dir=Path(r"D:\workspace\demo\.user-data"),
+            line=7,
+            column=2,
+        )
+        self.assertEqual(
+            command,
+            [
+                "cmd",
+                "/c",
+                r"D:\Cursor\bin\cursor.cmd",
+                "--new-window",
+                "--disable-extensions",
+                "--user-data-dir",
+                r"D:\workspace\demo\.user-data",
+                "--goto",
+                r"D:\workspace\demo\probe.py:7:2",
+            ],
+        )
+
+    def test_apply_safe_ide_file_write_appends_python_comment_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "probe.py"
+            target.write_text("print('hello')\n", encoding="utf-8")
+
+            payload = _apply_safe_ide_file_write(
+                target=target,
+                marker="Marker123",
+            )
+
+            self.assertEqual(payload["status"], "ok")
+            self.assertEqual(payload["transport"], "file_format")
+            self.assertEqual(payload["marker_line_text"], "# Marker123")
+            self.assertEqual(payload["marker_line"], 2)
+            self.assertIn("Marker123", target.read_text(encoding="utf-8"))
+
+    def test_detect_ide_blockers_flags_license_prompts(self) -> None:
+        blockers = _detect_ide_blockers(
+            ["Welcome to PyCharm", "Your Pro subscription expired"],
+        )
+        self.assertEqual(blockers, ["ide license dialog blocked the editor"])
+
+    def test_collect_ide_log_blockers_flags_update_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_dir = Path(tmp) / "logs" / "20260416T163537"
+            log_dir.mkdir(parents=True)
+            (log_dir / "main.log").write_text(
+                "Error: Code is currently being updated. Please wait.",
+                encoding="utf-8",
+            )
+            blockers = _collect_ide_log_blockers(Path(tmp))
+        self.assertEqual(blockers, ["ide update in progress blocked the editor"])
+
+    def test_extract_jetbrains_mcp_port_reads_enabled_component(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "mcpServer.xml"
+            config.write_text(
+                "\n".join(
+                    [
+                        "<application>",
+                        '  <component name="McpServerSettings">',
+                        '    <option name="enableMcpServer" value="true" />',
+                        '    <option name="mcpServerPort" value="65001" />',
+                        "  </component>",
+                        "</application>",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(_extract_jetbrains_mcp_port(config), 65001)
+
+    def test_extract_jetbrains_mcp_port_ignores_disabled_component(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "mcpServer.xml"
+            config.write_text(
+                "\n".join(
+                    [
+                        "<application>",
+                        '  <component name="McpServerSettings">',
+                        '    <option name="enableMcpServer" value="false" />',
+                        '    <option name="mcpServerPort" value="65001" />',
+                        "  </component>",
+                        "</application>",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            self.assertIsNone(_extract_jetbrains_mcp_port(config))
+
+    def test_decode_mcp_tool_result_prefers_structured_content(self) -> None:
+        payload = {
+            "result": {
+                "content": [{"type": "text", "text": '{"ignored":true}'}],
+                "structuredContent": {"activeFilePath": "demo.py", "openFiles": ["demo.py"]},
+            }
+        }
+        self.assertEqual(
+            _decode_mcp_tool_result(payload),
+            {"activeFilePath": "demo.py", "openFiles": ["demo.py"]},
+        )
+
     def test_run_cmd_chain_handles_called_batch_with_spaces(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             batch_path = Path(tmp) / "hello world.cmd"
@@ -74,6 +338,7 @@ class LiveSmokeHelperTests(unittest.TestCase):
                 ("quark-workflow", ["runtime"], {}, "switch_to_secondary_entrypoint"),
                 ("trae-cdp-write", ["runtime"], {"workspace": workspace}, "switch_to_tooling_plane"),
                 ("trae-workflow", ["runtime"], {"workspace": workspace}, "switch_to_tooling_plane"),
+                ("ide-write", ["runtime"], {"source": root / "sample.py"}, "switch_to_secondary_entrypoint"),
                 ("quark-cdp-write", ["runtime"], {}, "switch_to_secondary_entrypoint"),
                 ("masterpdf-zoom", ["runtime"], {"source": root / "sample.pdf"}, "switch_to_secondary_entrypoint"),
                 ("masterpdf-workflow", ["runtime"], {"source": root / "sample.pdf"}, "switch_to_secondary_entrypoint"),
