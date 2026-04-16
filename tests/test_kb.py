@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +13,9 @@ from omnicontrol.runtime.kb import (
     accepted_invocation_contexts,
     control_plane_weight,
     infer_secondary_profiles,
+    kb_path,
+    load_kb,
+    save_kb,
     secondary_profile_specs,
     _launch_overrides,
 )
@@ -293,6 +298,20 @@ class KnowledgeBaseProfileFamilyTests(unittest.TestCase):
         self.assertEqual(overrides["preferred_transport_variants"], ["legacy_jump_xml", "new_play"])
         self.assertEqual(overrides["preferred_method_order"], ["ExecuteCommand", "WebExecCommand2"])
         self.assertEqual(overrides["preferred_command_methods"], ["ExecuteCommand", "WebExecCommand2"])
+
+    def test_kb_path_uses_runtime_managed_location(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            resolved = kb_path(cwd=cwd)
+        self.assertIn("knowledge", str(resolved))
+        self.assertNotEqual(resolved, cwd / "knowledge" / "kb.json")
+
+    def test_save_kb_round_trips_from_runtime_location(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            save_kb({"version": 1, "updated_at": None, "cases": []}, cwd=cwd)
+            loaded = load_kb(cwd=cwd)
+        self.assertEqual(loaded["version"], 1)
 
 
 if __name__ == "__main__":
