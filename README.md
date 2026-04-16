@@ -3,6 +3,21 @@
   <span>OmniControl</span>
 </h1>
 
+<p align="center">
+    <picture>
+        <source media="(prefers-color-scheme: light)" srcset="./assets/title.jpg">
+        <img src="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/openclaw-logo-text.svg" alt="OpenClaw" width="500">
+    </picture>
+</p>
+
+<p align="center">
+  <strong>EXFOLIATE! EXFOLIATE!</strong>
+</p>
+
+<p align="center">
+  <strong>AUTOMATION BEYOND THE SDK.</strong>
+</p>
+
 English | [简体中文](./README.zh-CN.md)
 
 <p align="center">
