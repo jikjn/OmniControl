@@ -11,6 +11,7 @@ from omnicontrol.ir.manifest import build_manifest
 from omnicontrol.models import to_jsonable
 from omnicontrol.planner.adapter_selector import AdapterSelector
 from omnicontrol.runtime.live_smoke import run_smoke
+from omnicontrol.runtime.registry import profile_choices
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     smoke = subparsers.add_parser("smoke")
-    smoke.add_argument("profile", choices=["finder-open", "safari-open", "safari-dom-write", "word-export", "word-write", "word-workflow", "chrome-cdp", "chrome-form-write", "chrome-workflow", "everything-search", "qqmusic-play", "illustrator-export", "masterpdf-pagedown", "masterpdf-zoom", "masterpdf-workflow", "quark-cdp", "quark-cdp-write", "quark-workflow", "trae-open", "trae-cdp-write", "trae-workflow", "cadv-view", "cadv-zoom", "cadv-workflow", "nx-diagnose", "isight-diagnose", "ue-diagnose", "ue-python-write"])
+    smoke.add_argument("profile", choices=profile_choices())
     smoke.add_argument("--source", help="Source file for profiles that require it.")
     smoke.add_argument(
         "--output",
@@ -68,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--query", default=None, help="Search query for everything-search.")
     smoke.add_argument("--url", default=None, help="Target URL for chrome-cdp.")
     smoke.add_argument("--chrome-path", default=None, help="Override chrome.exe path.")
-    smoke.add_argument("--word-path", default=None, help="Override WINWORD.EXE path.")
+    smoke.add_argument("--word-path", default=None, help="Override Word executable or app path.")
     smoke.add_argument("--json", action="store_true", help="Print JSON output.")
 
     return parser

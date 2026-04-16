@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from omnicontrol.models import current_platform
 from omnicontrol.runtime.kb import PROFILE_ACCEPTED_INVOCATION_CONTEXTS, PROFILE_INTERACTION_LEVEL, PROFILE_INVOCATION_CONTEXT, PROFILE_METADATA
 from omnicontrol.runtime.live_smoke import (
     _build_sidecar_partial_payload,
@@ -22,6 +23,7 @@ from omnicontrol.runtime.pivots import plan_pivot_candidates
 
 
 class LiveSmokeHelperTests(unittest.TestCase):
+    @unittest.skipUnless(current_platform() == "windows", "requires Windows cmd.exe")
     def test_run_cmd_chain_handles_called_batch_with_spaces(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             batch_path = Path(tmp) / "hello world.cmd"
@@ -532,7 +534,10 @@ class LiveSmokeHelperTests(unittest.TestCase):
         self.assertEqual(calls, ["tencent_protocol", "private_protocol", "legacy"])
         self.assertTrue(payload["command_ok"])
         self.assertEqual(payload["transport_variant"], "legacy_jump_xml")
-        self.assertEqual(payload["transport_plan"], ["tencent_protocol", "private_protocol", "legacy_jump_xml"])
+        self.assertEqual(
+            payload["transport_plan"],
+            ["tencent_protocol", "legacy_jump_xml_runtime_auth", "private_protocol", "legacy_jump_xml"],
+        )
         self.assertEqual(payload["suppressed_transport_variants"], ["new_play"])
         self.assertEqual(len(payload["transport_attempts"]), 3)
 
