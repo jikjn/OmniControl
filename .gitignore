@@ -17,3 +17,4 @@ dist/
 benchmark-output/
 smoke-output/
 .DS_Store
+knowledge/
