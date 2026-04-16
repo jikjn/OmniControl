@@ -2,6 +2,10 @@
 
 English | [简体中文](./README.zh-CN.md)
 
+<p align="center">
+  <img src="./assets/hero-banner.jpg" alt="OmniControl hero banner" width="1200">
+</p>
+
 > **GUI is not long for this world. 💀🖥️ Automation should not stop where the SDK ends.**
 >
 > Most software was never designed for automation.  

@@ -2,6 +2,10 @@
 
 [English](./README.md) | 简体中文
 
+<p align="center">
+  <img src="./assets/hero-banner.jpg" alt="OmniControl hero banner" width="1200">
+</p>
+
 > **GUI离死期不远了！💀🖥️ 自动化，不该停在 SDK 结束的地方。**
 >
 > 大多数软件从来不是为自动化设计的。  
